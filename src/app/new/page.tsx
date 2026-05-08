@@ -1,12 +1,17 @@
 "use client";
 
-import { Info, Layers } from "lucide-react";
+import { ArrowRight, GitPullRequest, Info, Layers } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState, useTransition } from "react";
 import { AppShell } from "@/components/app-shell";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
-import { createChat, DaemonError, listTemplates } from "@/lib/api";
+import {
+  createChat,
+  createChatFromPr,
+  DaemonError,
+  listTemplates,
+} from "@/lib/api";
 import { getBillingMode, type BillingMode } from "@/lib/api/settings";
 import { isReviewOnlyTemplate, type Template } from "@/lib/types";
 import {
@@ -72,7 +77,7 @@ function NewChatPageInner() {
 
   const costEstimate = useMemo(
     () => estimateCost({ template, prompt, attachments }),
-     
+
     [prompt, attachments, template],
   );
 
@@ -82,16 +87,55 @@ function NewChatPageInner() {
   // mode where the user isn't paying per call.
   const overCap = Boolean(
     billingMode !== "subscription" &&
-      template?.costCapUsd &&
-      template.costCapUsd > 0 &&
-      costEstimate.usdRangeMax > template.costCapUsd,
+    template?.costCapUsd &&
+    template.costCapUsd > 0 &&
+    costEstimate.usdRangeMax > template.costCapUsd,
   );
 
   const [yoloMode, setYoloMode] = useState(false);
   const [repoPath, setRepoPath] = useState("");
 
+  // 'prompt' is the historical free-form path; 'pr' fetches a GitHub PR
+  // via the daemon's gh shell-out and seeds a review-only chat from the
+  // synthesized artifact. PR mode requires a review-only template; we
+  // surface a validation error if the picker is on a doer template.
+  const [mode, setMode] = useState<"prompt" | "pr">("prompt");
+  const [prUrl, setPrUrl] = useState("");
+
   const reviewOnly = isReviewOnlyTemplate(template);
   const artifactSpec = reviewOnly ? template?.phases?.[0]?.artifact : undefined;
+
+  async function handleStartFromPr() {
+    if (!template) return;
+    const trimmed = prUrl.trim();
+    if (!trimmed) {
+      setCreateError("Paste a GitHub PR URL.");
+      return;
+    }
+    if (!reviewOnly) {
+      setCreateError(
+        "PR review needs a review-only template. Pick one from the template list.",
+      );
+      return;
+    }
+    setCreateError(null);
+    startTransition(async () => {
+      try {
+        const trimmedRepo = repoPath.trim();
+        const chat = await createChatFromPr({
+          url: trimmed,
+          templateId: template.id,
+          ...(trimmedRepo.length > 0 ? { repoPath: trimmedRepo } : {}),
+          yolo: yoloMode,
+        });
+        router.push(`/runs/${chat.slug || chat.id}`);
+      } catch (err) {
+        setCreateError(
+          err instanceof DaemonError ? err.message : "Failed to fetch PR",
+        );
+      }
+    });
+  }
 
   async function handleStartRun() {
     if (!template || !prompt) return;
@@ -192,6 +236,46 @@ function NewChatPageInner() {
           </div>
         )}
 
+        <div
+          role="tablist"
+          aria-label="Input mode"
+          className="mb-4 inline-flex rounded-lg border border-border bg-card/30 p-1"
+        >
+          <button
+            role="tab"
+            aria-selected={mode === "prompt"}
+            type="button"
+            onClick={() => {
+              setMode("prompt");
+              setCreateError(null);
+            }}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              mode === "prompt"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Free-form
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === "pr"}
+            type="button"
+            onClick={() => {
+              setMode("pr");
+              setCreateError(null);
+            }}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              mode === "pr"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <GitPullRequest className="h-3.5 w-3.5" />
+            GitHub PR
+          </button>
+        </div>
+
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <Picker
             icon={<Layers className="h-3.5 w-3.5" />}
@@ -257,20 +341,62 @@ function NewChatPageInner() {
           </Picker>
         </div>
 
-        <PromptCard
-          template={template}
-          prompt={prompt}
-          setPrompt={setPrompt}
-          reviewOnly={reviewOnly}
-          artifactSpec={artifactSpec}
-          billingMode={billingMode}
-          costEstimate={costEstimate}
-          overCap={overCap}
-          isPending={isPending}
-          onStart={handleStartRun}
-        />
+        {mode === "prompt" ? (
+          <PromptCard
+            template={template}
+            prompt={prompt}
+            setPrompt={setPrompt}
+            reviewOnly={reviewOnly}
+            artifactSpec={artifactSpec}
+            billingMode={billingMode}
+            costEstimate={costEstimate}
+            overCap={overCap}
+            isPending={isPending}
+            onStart={handleStartRun}
+          />
+        ) : (
+          <div className="mb-4 rounded-lg border border-border bg-card p-4">
+            <label
+              htmlFor="pr-url"
+              className="block text-sm font-medium text-foreground"
+            >
+              Pull request URL
+            </label>
+            <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
+              Chorus shells out to{" "}
+              <code className="rounded bg-muted px-1">gh</code> on this machine
+              to fetch the PR's description, diff, and existing comments. You
+              must be logged in via{" "}
+              <code className="rounded bg-muted px-1">gh auth login</code>.
+            </p>
+            <input
+              id="pr-url"
+              type="url"
+              value={prUrl}
+              onChange={(e) => setPrUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo/pull/123"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            {!reviewOnly && (
+              <p className="mt-2 text-[11px] text-amber-300">
+                Pick a review-only template — PR review skips the doer.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={handleStartFromPr}
+              disabled={isPending || !reviewOnly || prUrl.trim().length === 0}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isPending ? "Fetching PR…" : "Fetch & start review"}
+              {!isPending && <ArrowRight className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        )}
 
-        {overCap && (
+        {overCap && mode === "prompt" && (
           <div className="mb-4 flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-200">
             <Info className="mt-0.5 h-3 w-3 shrink-0 text-rose-400" />
             <span>
@@ -315,17 +441,17 @@ function NewChatPageInner() {
             spellCheck={false}
           />
           <p className="mt-2 text-[11px] text-muted-foreground">
-            {reviewOnly
-              ? "Review-only templates have no doer and no Ship phase, so there's nothing to commit. Pick a template with a doer (e.g. Tri-Review) to open a PR."
-              : (
-                <>
-                  When set: doer makes real edits in this repo. After reviewers
-                  agree, chorus opens a PR via{" "}
-                  <code className="rounded bg-muted px-1">gh pr create</code> (no
-                  auto-merge — you review + click Merge in GitHub). Leave blank
-                  to skip the Ship phase.
-                </>
-              )}
+            {reviewOnly ? (
+              "Review-only templates have no doer and no Ship phase, so there's nothing to commit. Pick a template with a doer (e.g. Tri-Review) to open a PR."
+            ) : (
+              <>
+                When set: doer makes real edits in this repo. After reviewers
+                agree, chorus opens a PR via{" "}
+                <code className="rounded bg-muted px-1">gh pr create</code> (no
+                auto-merge — you review + click Merge in GitHub). Leave blank to
+                skip the Ship phase.
+              </>
+            )}
           </p>
         </div>
 
@@ -376,7 +502,9 @@ function NewChatPageInner() {
           >
             <span
               className={`h-3.5 w-3.5 rounded-full transition-transform ${
-                yoloMode ? "translate-x-4 bg-rose-400" : "bg-muted-foreground/50"
+                yoloMode
+                  ? "translate-x-4 bg-rose-400"
+                  : "bg-muted-foreground/50"
               }`}
             />
           </span>

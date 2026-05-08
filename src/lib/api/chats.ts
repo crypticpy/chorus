@@ -147,3 +147,40 @@ export async function createChat(options: {
   return fromRow(row);
 }
 
+export interface CreateChatFromPrResponse extends Chat {
+  pr?: {
+    owner: string;
+    repo: string;
+    number: number;
+    title: string;
+    author: string;
+    baseBranch: string;
+    headBranch: string;
+  };
+}
+
+/**
+ * Create a chat from a GitHub PR URL. Daemon shells out to `gh` to fetch
+ * the PR (meta + diff + existing comments), composes a Markdown artifact,
+ * and seeds a review-only chat.
+ *
+ * Caller MUST pass a templateId pointing at a `review_only` template — the
+ * daemon validates this and surfaces a `validation` error otherwise.
+ */
+type RawChatRowWithPr = RawChatRow & { pr?: CreateChatFromPrResponse["pr"] };
+
+export async function createChatFromPr(options: {
+  url: string;
+  templateId: string;
+  /** Optional cwd for the gh CLI shell-out. Defaults to daemon process cwd
+   *  if omitted; pass when the PR's repo is checked out locally and you
+   *  want the chat row to retain that path for follow-up flows. */
+  repoPath?: string;
+  yolo?: boolean;
+}): Promise<CreateChatFromPrResponse> {
+  const row = await fetchFromDaemon<RawChatRowWithPr>("/chats/from-pr", {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+  return { ...fromRow(row), pr: row.pr };
+}
