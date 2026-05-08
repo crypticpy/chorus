@@ -30,9 +30,11 @@ import type { RunnerEvent } from "../runner/types.js";
  * works the same in dev (tsx), prod (compiled), and tests.
  */
 function loadPresetPrompt(preset: string): string {
-  // ESM `__dirname` shim: import.meta.url → file path.
-  const here = path.dirname(new URL(import.meta.url).pathname);
-  const promptPath = path.join(here, "..", "presets", `${preset}.md`);
+  // `__dirname` works in both the CJS dist build and tsx-driven dev
+  // (tsx ≥4 shims it in ESM mode). Avoid `import.meta.url` here — the
+  // server tsconfig compiles to CJS, where `import.meta` is a syntax
+  // error.
+  const promptPath = path.join(__dirname, "..", "presets", `${preset}.md`);
   return fs.readFileSync(promptPath, "utf-8");
 }
 
