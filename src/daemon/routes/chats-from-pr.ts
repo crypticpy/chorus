@@ -132,6 +132,11 @@ export function registerChatsFromPrRoute(
         canonicalRepoPath,
         artifact: fetched.artifact,
         yolo,
+        // PR review chats run with the full fleet at full capacity —
+        // the orchestrate scheduler skips voice.tier gating when this
+        // is set. Reviews are short, parallel, and the user is asking
+        // for the most thorough opinion possible.
+        bypassQuota: true,
         requestId: request.id,
         tmuxMgr,
         errorDetector,

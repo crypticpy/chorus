@@ -10,11 +10,17 @@
  * We exercise the schemas directly (not through the HTTP layer) so the test
  * doesn't need a fastify instance — they're pure zod validators.
  */
-import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
-const Lineage = z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot']);
-const Source = z.enum(['cli', 'api']);
+const Lineage = z.enum([
+  "anthropic",
+  "openai",
+  "google",
+  "opencode",
+  "moonshot",
+]);
+const Source = z.enum(["cli", "api"]);
 
 const Cost = z.number().finite().min(0).nullable().optional();
 
@@ -22,7 +28,7 @@ const PostBodySchema = z.object({
   provider: z.string().min(1),
   model_id: z.string().min(1),
   label: z.string().min(1),
-  source: Source.default('api'),
+  source: Source.default("api"),
   lineage: Lineage,
   vendor_family: z.string().nullable().optional(),
   input_cost_per_mtok: Cost,
@@ -30,22 +36,27 @@ const PostBodySchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+const Tier = z.enum(["high", "medium", "low"]);
+const MonthlyBudget = z.number().finite().min(0).nullable().optional();
+
 const PutBodySchema = z.object({
   label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   input_cost_per_mtok: Cost,
   output_cost_per_mtok: Cost,
+  tier: Tier.optional(),
+  monthly_budget_usd: MonthlyBudget,
 });
 
 const validBase = {
-  provider: 'openrouter',
-  model_id: 'moonshotai/kimi-k2',
-  label: 'Kimi K2',
-  lineage: 'moonshot' as const,
+  provider: "openrouter",
+  model_id: "moonshotai/kimi-k2",
+  label: "Kimi K2",
+  lineage: "moonshot" as const,
 };
 
-describe('voices POST schema cost validation', () => {
-  it('accepts non-negative input + output costs', () => {
+describe("voices POST schema cost validation", () => {
+  it("accepts non-negative input + output costs", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       input_cost_per_mtok: 0.5,
@@ -54,7 +65,7 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(true);
   });
 
-  it('accepts 0 (free tier)', () => {
+  it("accepts 0 (free tier)", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       input_cost_per_mtok: 0,
@@ -63,7 +74,7 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(true);
   });
 
-  it('accepts null (cost unknown)', () => {
+  it("accepts null (cost unknown)", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       input_cost_per_mtok: null,
@@ -72,12 +83,12 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(true);
   });
 
-  it('accepts omitted cost fields', () => {
+  it("accepts omitted cost fields", () => {
     const r = PostBodySchema.safeParse(validBase);
     expect(r.success).toBe(true);
   });
 
-  it('REJECTS negative input_cost_per_mtok', () => {
+  it("REJECTS negative input_cost_per_mtok", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       input_cost_per_mtok: -0.01,
@@ -85,7 +96,7 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(false);
   });
 
-  it('REJECTS negative output_cost_per_mtok', () => {
+  it("REJECTS negative output_cost_per_mtok", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       output_cost_per_mtok: -100,
@@ -93,7 +104,7 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(false);
   });
 
-  it('REJECTS NaN', () => {
+  it("REJECTS NaN", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       input_cost_per_mtok: NaN,
@@ -101,7 +112,7 @@ describe('voices POST schema cost validation', () => {
     expect(r.success).toBe(false);
   });
 
-  it('REJECTS Infinity', () => {
+  it("REJECTS Infinity", () => {
     const r = PostBodySchema.safeParse({
       ...validBase,
       output_cost_per_mtok: Infinity,
@@ -110,29 +121,69 @@ describe('voices POST schema cost validation', () => {
   });
 });
 
-describe('voices PUT schema cost validation', () => {
-  it('accepts a partial update with valid costs', () => {
+describe("voices PUT schema cost validation", () => {
+  it("accepts a partial update with valid costs", () => {
     const r = PutBodySchema.safeParse({ input_cost_per_mtok: 0.25 });
     expect(r.success).toBe(true);
   });
 
-  it('REJECTS negative cost on update', () => {
+  it("REJECTS negative cost on update", () => {
     const r = PutBodySchema.safeParse({ output_cost_per_mtok: -1 });
     expect(r.success).toBe(false);
   });
 
-  it('REJECTS NaN on update', () => {
+  it("REJECTS NaN on update", () => {
     const r = PutBodySchema.safeParse({ input_cost_per_mtok: NaN });
     expect(r.success).toBe(false);
   });
 
-  it('accepts null (clear cost)', () => {
+  it("accepts null (clear cost)", () => {
     const r = PutBodySchema.safeParse({ input_cost_per_mtok: null });
     expect(r.success).toBe(true);
   });
 
-  it('accepts an empty body (no-op update)', () => {
+  it("accepts an empty body (no-op update)", () => {
     const r = PutBodySchema.safeParse({});
     expect(r.success).toBe(true);
+  });
+});
+
+describe("voices PUT tier + monthly_budget_usd", () => {
+  it("accepts each tier value", () => {
+    for (const tier of ["high", "medium", "low"] as const) {
+      expect(PutBodySchema.safeParse({ tier }).success).toBe(true);
+    }
+  });
+
+  it("rejects an unknown tier value", () => {
+    const r = PutBodySchema.safeParse({ tier: "ultra" });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a non-negative monthly budget", () => {
+    expect(PutBodySchema.safeParse({ monthly_budget_usd: 50 }).success).toBe(
+      true,
+    );
+  });
+
+  it("accepts null monthly budget (clear)", () => {
+    expect(PutBodySchema.safeParse({ monthly_budget_usd: null }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects a negative monthly budget", () => {
+    expect(PutBodySchema.safeParse({ monthly_budget_usd: -1 }).success).toBe(
+      false,
+    );
+  });
+
+  it("rejects NaN/Infinity monthly budget", () => {
+    expect(PutBodySchema.safeParse({ monthly_budget_usd: NaN }).success).toBe(
+      false,
+    );
+    expect(
+      PutBodySchema.safeParse({ monthly_budget_usd: Infinity }).success,
+    ).toBe(false);
   });
 });

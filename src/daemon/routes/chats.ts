@@ -74,6 +74,9 @@ export type CreateChatInputs = {
   canonicalRepoPath?: string;
   artifact?: string;
   yolo?: boolean;
+  /** Set true on PR-review chats so the orchestrate scheduler ignores
+   *  voice.tier and runs every enabled voice at full capacity. */
+  bypassQuota?: boolean;
   requestId?: string;
   tmuxMgr: TmuxManager;
   errorDetector: ErrorDetector;
@@ -105,6 +108,7 @@ export async function createChatFromValidatedInputs(
     canonicalRepoPath,
     artifact,
     yolo,
+    bypassQuota,
     requestId,
     tmuxMgr,
     errorDetector,
@@ -194,6 +198,7 @@ export async function createChatFromValidatedInputs(
     repo_path: canonicalRepoPath,
     artifact: artifact ?? undefined,
     yolo: yolo === true,
+    bypass_quota: bypassQuota === true,
   });
 
   await phaseEvents.create({
