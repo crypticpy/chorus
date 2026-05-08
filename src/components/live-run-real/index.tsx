@@ -96,7 +96,9 @@ export function LiveRunReal({
     new Set(),
   );
   const [prUrl, setPrUrl] = useState<string | undefined>(initialPrUrl);
-  const [shipError, setShipError] = useState<string | undefined>(initialShipError);
+  const [shipError, setShipError] = useState<string | undefined>(
+    initialShipError,
+  );
 
   // Live tail per participant (`<role>-<agentName>` → most recent ~500
   // chars). When headless transport is in use, runner emits
@@ -219,7 +221,8 @@ export function LiveRunReal({
           if (demoDataSource) {
             const snapshot = demoDataSource.fetchArtifacts();
             setRounds(snapshot.rounds);
-            if (Array.isArray(snapshot.swaps)) mergeSwapsFromArtifacts(snapshot.swaps);
+            if (Array.isArray(snapshot.swaps))
+              mergeSwapsFromArtifacts(snapshot.swaps);
           }
         }
 
@@ -267,10 +270,15 @@ export function LiveRunReal({
             // Suppress duplicates (same kind + message). Repeated
             // emissions from a retried runner shouldn't pile up
             // identical banners.
-            if (existing.some((w) => w.kind === kind && w.message === message)) {
+            if (
+              existing.some((w) => w.kind === kind && w.message === message)
+            ) {
               return prev;
             }
-            next[key] = [...existing, { kind, message, ts: e.ts ?? Date.now() }];
+            next[key] = [
+              ...existing,
+              { kind, message, ts: e.ts ?? Date.now() },
+            ];
             return next;
           });
 
@@ -324,14 +332,16 @@ export function LiveRunReal({
           if (demoDataSource) {
             const snapshot = demoDataSource.fetchArtifacts();
             setRounds(snapshot.rounds);
-            if (Array.isArray(snapshot.swaps)) mergeSwapsFromArtifacts(snapshot.swaps);
+            if (Array.isArray(snapshot.swaps))
+              mergeSwapsFromArtifacts(snapshot.swaps);
           } else {
             fetch(`/api/run-artifacts/${chatId}`)
               .then((r) => (r.ok ? r.json() : null))
               .then((data) => {
                 if (!data) return;
                 setRounds(data.rounds);
-                if (Array.isArray(data.swaps)) mergeSwapsFromArtifacts(data.swaps);
+                if (Array.isArray(data.swaps))
+                  mergeSwapsFromArtifacts(data.swaps);
               })
               .catch(() => {});
           }
@@ -359,7 +369,10 @@ export function LiveRunReal({
             setPrUrl(payloadPrUrl);
           }
           const payloadShipError = e.payload.shipError as string | undefined;
-          if (typeof payloadShipError === "string" && payloadShipError.length > 0) {
+          if (
+            typeof payloadShipError === "string" &&
+            payloadShipError.length > 0
+          ) {
             setShipError(payloadShipError);
           }
 
@@ -367,20 +380,33 @@ export function LiveRunReal({
           if (demoDataSource) {
             const snapshot = demoDataSource.fetchArtifacts();
             setRounds(snapshot.rounds);
-            if (Array.isArray(snapshot.swaps)) mergeSwapsFromArtifacts(snapshot.swaps);
+            if (Array.isArray(snapshot.swaps))
+              mergeSwapsFromArtifacts(snapshot.swaps);
           } else {
             fetch(`/api/run-artifacts/${chatId}`)
               .then((r) => (r.ok ? r.json() : null))
               .then((data) => {
                 if (!data) return;
                 setRounds(data.rounds);
-                if (Array.isArray(data.swaps)) mergeSwapsFromArtifacts(data.swaps);
+                if (Array.isArray(data.swaps))
+                  mergeSwapsFromArtifacts(data.swaps);
               })
               .catch(() => {});
           }
         }
-      } catch {
-        // skip malformed
+      } catch (err) {
+        // Don't tear down the SSE on a single bad frame — keep listening.
+        // Pre-fix the catch was completely silent, so a wire-format
+        // mismatch (daemon shipped an event the cockpit didn't know how
+        // to parse) disappeared into the void. console.warn so it's
+        // visible in DevTools and devs notice the schema drift.
+        console.warn("live-run: dropped malformed SSE frame", {
+          err: err instanceof Error ? err.message : String(err),
+          preview:
+            typeof msg.data === "string"
+              ? msg.data.slice(0, 200)
+              : "(non-string)",
+        });
       }
     };
     return () => es.close();
@@ -498,10 +524,16 @@ export function LiveRunReal({
                 <span className="text-muted-foreground/40">·</span>
                 <Link
                   href={`/templates${template ? `#${encodeURIComponent(template.id)}` : ""}`}
-                  title={template ? `Template: ${template.name}` : `Template (deleted): ${templateId}`}
+                  title={
+                    template
+                      ? `Template: ${template.name}`
+                      : `Template (deleted): ${templateId}`
+                  }
                   className="inline-flex min-w-0 shrink items-center gap-1.5 text-[11px] text-muted-foreground transition hover:text-primary"
                 >
-                  <span className="font-mono uppercase tracking-wider">tpl</span>
+                  <span className="font-mono uppercase tracking-wider">
+                    tpl
+                  </span>
                   <span className="truncate font-medium text-foreground">
                     {template?.name ?? templateId}
                   </span>
