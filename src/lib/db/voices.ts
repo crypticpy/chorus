@@ -1,32 +1,45 @@
-import { z } from 'zod';
-import { getDb } from './connection.js';
+import { z } from "zod";
+import { getDb } from "./connection.js";
+
+/**
+ * Task-complexity tier used by the orchestrator scheduler. 'low' voices
+ * run only 'low' tasks, 'medium' run 'medium' or 'low', 'high' run any.
+ * Default 'medium' on backfill — see schema.sql.
+ */
+export type VoiceTier = "high" | "medium" | "low";
 
 const VoiceRowSchema = z.object({
   id: z.string(),
   label: z.string(),
-  source: z.enum(['cli', 'api']),
+  source: z.enum(["cli", "api"]),
   provider: z.string(),
   model_id: z.string(),
-  lineage: z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot']),
+  lineage: z.enum(["anthropic", "openai", "google", "opencode", "moonshot"]),
   vendor_family: z.string().nullable(),
   input_cost_per_mtok: z.number().nullable(),
   output_cost_per_mtok: z.number().nullable(),
   enabled: z.coerce.boolean(),
-  disabled_reason: z.enum(['user', 'auto_missing']).nullable().optional().default(null),
+  disabled_reason: z
+    .enum(["user", "auto_missing"])
+    .nullable()
+    .optional()
+    .default(null),
+  tier: z.enum(["high", "medium", "low"]).default("medium"),
+  monthly_budget_usd: z.number().nullable().optional().default(null),
   created_at: z.number().int(),
   updated_at: z.number().int(),
 });
 
 export type VoiceRow = z.infer<typeof VoiceRowSchema>;
-export type VoiceDisabledReason = 'user' | 'auto_missing';
+export type VoiceDisabledReason = "user" | "auto_missing";
 
 export interface VoiceUpsertInput {
   id: string;
   label: string;
-  source: 'cli' | 'api';
+  source: "cli" | "api";
   provider: string;
   model_id: string;
-  lineage: 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot';
+  lineage: "anthropic" | "openai" | "google" | "opencode" | "moonshot";
   vendor_family?: string | null;
   input_cost_per_mtok?: number | null;
   output_cost_per_mtok?: number | null;
@@ -37,6 +50,10 @@ export interface VoiceUpsertInput {
    * re-detect path can safely re-enable transient drops.
    */
   disabled_reason?: VoiceDisabledReason | null;
+  /** Task-complexity tier; preserved across upserts when omitted. */
+  tier?: VoiceTier;
+  /** Monthly spend cap (USD); preserved across upserts when omitted. */
+  monthly_budget_usd?: number | null;
 }
 
 export interface VoiceUpdateInput {
@@ -47,11 +64,13 @@ export interface VoiceUpdateInput {
   /** Used by seed loops to rewrite the latest model on a stable-ID voice. */
   model_id?: string;
   disabled_reason?: VoiceDisabledReason | null;
+  tier?: VoiceTier;
+  monthly_budget_usd?: number | null;
 }
 
 export interface VoiceListFilter {
   lineage?: string;
-  source?: 'cli' | 'api';
+  source?: "cli" | "api";
   provider?: string;
   /** When `undefined`, returns all voices (enabled + disabled). */
   enabled?: boolean;
@@ -79,7 +98,9 @@ export const voices = {
     const existing = await voices.getById(input.id);
 
     const enabledExplicit = input.enabled !== undefined;
-    const reasonExplicit = 'disabled_reason' in input;
+    const reasonExplicit = "disabled_reason" in input;
+    const tierExplicit = input.tier !== undefined;
+    const budgetExplicit = "monthly_budget_usd" in input;
 
     let enabledValue: number;
     if (enabledExplicit) enabledValue = input.enabled ? 1 : 0;
@@ -91,13 +112,23 @@ export const voices = {
     else if (existing) reasonValue = existing.disabled_reason ?? null;
     else reasonValue = null;
 
+    let tierValue: VoiceTier;
+    if (tierExplicit && input.tier) tierValue = input.tier;
+    else if (existing) tierValue = existing.tier;
+    else tierValue = "medium";
+
+    let budgetValue: number | null;
+    if (budgetExplicit) budgetValue = input.monthly_budget_usd ?? null;
+    else if (existing) budgetValue = existing.monthly_budget_usd ?? null;
+    else budgetValue = null;
+
     await db.execute({
       sql: `
         INSERT OR REPLACE INTO voices
           (id, label, source, provider, model_id, lineage, vendor_family,
            input_cost_per_mtok, output_cost_per_mtok, enabled,
-           disabled_reason, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           disabled_reason, tier, monthly_budget_usd, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       args: [
         input.id,
@@ -111,6 +142,8 @@ export const voices = {
         input.output_cost_per_mtok ?? null,
         enabledValue,
         reasonValue,
+        tierValue,
+        budgetValue,
         existing?.created_at ?? now,
         now,
       ],
@@ -126,25 +159,25 @@ export const voices = {
     const where: string[] = [];
     const args: unknown[] = [];
     if (filter?.lineage) {
-      where.push('lineage = ?');
+      where.push("lineage = ?");
       args.push(filter.lineage);
     }
     if (filter?.source) {
-      where.push('source = ?');
+      where.push("source = ?");
       args.push(filter.source);
     }
     if (filter?.provider) {
-      where.push('provider = ?');
+      where.push("provider = ?");
       args.push(filter.provider);
     }
     if (filter?.enabled !== undefined) {
-      where.push('enabled = ?');
+      where.push("enabled = ?");
       args.push(filter.enabled ? 1 : 0);
     }
     const sql =
-      'SELECT * FROM voices' +
-      (where.length > 0 ? ' WHERE ' + where.join(' AND ') : '') +
-      ' ORDER BY provider ASC, label ASC';
+      "SELECT * FROM voices" +
+      (where.length > 0 ? " WHERE " + where.join(" AND ") : "") +
+      " ORDER BY provider ASC, label ASC";
     const result = await db.execute({ sql, args: args as never });
     return result.rows.map((row) => VoiceRowSchema.parse(row));
   },
@@ -152,7 +185,7 @@ export const voices = {
   async getById(id: string): Promise<VoiceRow | null> {
     const db = await getDb();
     const result = await db.execute({
-      sql: 'SELECT * FROM voices WHERE id = ?',
+      sql: "SELECT * FROM voices WHERE id = ?",
       args: [id],
     });
     if (result.rows.length === 0) return null;
@@ -166,7 +199,7 @@ export const voices = {
 
     const enabledChanged =
       partial.enabled !== undefined && partial.enabled !== existing.enabled;
-    const reasonExplicit = 'disabled_reason' in partial;
+    const reasonExplicit = "disabled_reason" in partial;
 
     // Default reason policy: when the caller flips enabled without
     // touching disabled_reason, we record intent automatically.
@@ -177,7 +210,7 @@ export const voices = {
     if (reasonExplicit) {
       nextReason = partial.disabled_reason ?? null;
     } else if (enabledChanged) {
-      nextReason = partial.enabled ? null : 'user';
+      nextReason = partial.enabled ? null : "user";
     } else {
       nextReason = existing.disabled_reason ?? null;
     }
@@ -195,13 +228,18 @@ export const voices = {
           : existing.output_cost_per_mtok,
       model_id: partial.model_id ?? existing.model_id,
       disabled_reason: nextReason,
+      tier: partial.tier ?? existing.tier,
+      monthly_budget_usd:
+        "monthly_budget_usd" in partial
+          ? (partial.monthly_budget_usd ?? null)
+          : (existing.monthly_budget_usd ?? null),
     };
 
     await db.execute({
       sql: `
         UPDATE voices
         SET label = ?, enabled = ?, input_cost_per_mtok = ?, output_cost_per_mtok = ?, model_id = ?,
-            disabled_reason = ?, updated_at = ?
+            disabled_reason = ?, tier = ?, monthly_budget_usd = ?, updated_at = ?
         WHERE id = ?
       `,
       args: [
@@ -211,6 +249,8 @@ export const voices = {
         next.output_cost_per_mtok,
         next.model_id,
         next.disabled_reason,
+        next.tier,
+        next.monthly_budget_usd,
         Date.now(),
         id,
       ],
@@ -223,6 +263,6 @@ export const voices = {
 
   async delete(id: string): Promise<void> {
     const db = await getDb();
-    await db.execute({ sql: 'DELETE FROM voices WHERE id = ?', args: [id] });
+    await db.execute({ sql: "DELETE FROM voices WHERE id = ?", args: [id] });
   },
 };

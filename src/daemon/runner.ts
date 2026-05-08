@@ -225,6 +225,23 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         continue;
       }
 
+      // Audit and orchestrate phases are wired up in follow-up commits.
+      // Skip them with a phase_done so a template author who declares one
+      // before that lands gets a clean no-op rather than a runner crash.
+      if (phase.kind === "audit" || phase.kind === "orchestrate") {
+        onEvent({
+          chatId,
+          type: "phase_done",
+          payload: {
+            phaseId: phase.id,
+            phaseIdx,
+            kind: phase.kind,
+          },
+          ts: Date.now(),
+        });
+        continue;
+      }
+
       // Standard phase from here on.
       const stdPhase: StandardPhase = phase;
 

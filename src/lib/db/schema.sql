@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS chats (
   -- NULL for chats created before this column existed, or for chats that
   -- never reached the runner — readers fall back to the live template by id.
   template_snapshot TEXT,
+  -- When 1, the orchestrate scheduler ignores voice.tier and uses every
+  -- enabled voice at full capacity. Set by `/chats/from-pr` so PR reviews
+  -- always run with the strongest available models. Default 0 = honour
+  -- tier↔task-complexity matching.
+  bypass_quota INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   finished_at INTEGER
@@ -133,6 +138,14 @@ CREATE TABLE IF NOT EXISTS voices (
   -- intent is sticky. Pre-fix DBs surface as NULL → treated as 'user' so
   -- we never silently override prior toggles after upgrade.
   disabled_reason TEXT,
+  -- Task-complexity tier this voice should be matched against. The
+  -- orchestrator scheduler matches `item.complexity` ≤ `voice.tier` so a
+  -- 'low' voice can run only 'low' tasks, 'medium' can run 'medium' or
+  -- 'low', 'high' can run anything. Default 'medium' on backfill.
+  tier TEXT NOT NULL DEFAULT 'medium',
+  -- Optional monthly spend cap this voice declares (USD). Captured for
+  -- future budget enforcement; not enforced today. NULL = no cap.
+  monthly_budget_usd REAL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

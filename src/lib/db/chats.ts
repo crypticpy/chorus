@@ -1,6 +1,6 @@
-import { z } from 'zod';
-import { chatEventsBus } from '../chat-events-bus.js';
-import { generateUlid, getDb } from './connection.js';
+import { z } from "zod";
+import { chatEventsBus } from "../chat-events-bus.js";
+import { generateUlid, getDb } from "./connection.js";
 
 const ChatRowSchema = z.object({
   id: z.string(),
@@ -13,14 +13,14 @@ const ChatRowSchema = z.object({
   work: z.string(),
   template_id: z.string(),
   status: z.enum([
-    'drafting',
-    'reviewing',
-    'approved',
-    'merged',
-    'blocked',
-    'cancelled',
-    'failed',
-    'no_review',
+    "drafting",
+    "reviewing",
+    "approved",
+    "merged",
+    "blocked",
+    "cancelled",
+    "failed",
+    "no_review",
   ]),
   current_phase_idx: z.number().int(),
   yolo: z.coerce.boolean().default(false),
@@ -37,6 +37,12 @@ const ChatRowSchema = z.object({
    * pay the parse cost on list pages that never use it.
    */
   template_snapshot: z.string().nullable().default(null),
+  /**
+   * When true, the orchestrate scheduler ignores voice.tier and uses
+   * every enabled voice at full capacity. Set on PR-review chats so
+   * reviewers always run with the strongest available models.
+   */
+  bypass_quota: z.coerce.boolean().default(false),
   created_at: z.number().int(),
   updated_at: z.number().int(),
   finished_at: z.number().int().nullable(),
@@ -56,6 +62,9 @@ const CreateChatSchema = z.object({
   /** Skip ask-user gates for this run. The runner only honours this on the
    *  ship phase today; safe to pass on any chat. */
   yolo: z.boolean().optional(),
+  /** Set true on PR-review chats to bypass voice.tier gating in the
+   *  orchestrator scheduler. Default false. */
+  bypass_quota: z.boolean().optional(),
 });
 
 export type CreateChatInput = z.infer<typeof CreateChatSchema>;
@@ -76,7 +85,7 @@ export const chats = {
     // attempts: if we can't get a unique slug after 3 collisions there's
     // something structurally wrong (clock skew, slug generator bug);
     // fail loud.
-    const { generateChatSlug } = await import('../chat-slug.js');
+    const { generateChatSlug } = await import("../chat-slug.js");
 
     const MAX_SLUG_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
@@ -89,27 +98,29 @@ export const chats = {
       try {
         await db.execute({
           sql: `
-            INSERT INTO chats (id, slug, work, template_id, status, current_phase_idx, yolo, attached_files, repo_path, artifact, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO chats (id, slug, work, template_id, status, current_phase_idx, yolo, attached_files, repo_path, artifact, bypass_quota, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           args: [
             ulid,
             slug,
             validated.work,
             validated.template_id,
-            'drafting',
+            "drafting",
             0,
             validated.yolo ? 1 : 0,
             validated.attached_files || null,
             validated.repo_path || null,
             validated.artifact || null,
+            validated.bypass_quota ? 1 : 0,
             now,
             now,
           ],
         });
         const row = await chats.getById(ulid);
-        if (!row) throw new Error(`chats.create: row vanished after insert: ${ulid}`);
-        chatEventsBus.emitChange(row.id, 'created');
+        if (!row)
+          throw new Error(`chats.create: row vanished after insert: ${ulid}`);
+        chatEventsBus.emitChange(row.id, "created");
         return row;
       } catch (err: unknown) {
         // libsql surfaces UNIQUE violations as Error with message
@@ -117,19 +128,22 @@ export const chats = {
         // partial-index name). Retry on this exact pattern; rethrow
         // anything else (FK violations, type errors, conn drops).
         const message = err instanceof Error ? err.message : String(err);
-        const isSlugCollision = /UNIQUE constraint failed.*chats\.slug|idx_chats_slug/i.test(message);
+        const isSlugCollision =
+          /UNIQUE constraint failed.*chats\.slug|idx_chats_slug/i.test(message);
         if (!isSlugCollision || attempt === MAX_SLUG_ATTEMPTS) throw err;
       }
     }
     // Unreachable — the loop above either returns or throws on the final attempt.
-    throw new Error('chats.create: unique slug allocation failed after retries');
+    throw new Error(
+      "chats.create: unique slug allocation failed after retries",
+    );
   },
 
   /** Used by generateChatSlug — does any chat already use this slug? */
   async slugExists(slug: string): Promise<boolean> {
     const db = await getDb();
     const result = await db.execute({
-      sql: 'SELECT 1 FROM chats WHERE slug = ? LIMIT 1',
+      sql: "SELECT 1 FROM chats WHERE slug = ? LIMIT 1",
       args: [slug],
     });
     return result.rows.length > 0;
@@ -138,7 +152,7 @@ export const chats = {
   async getBySlug(slug: string): Promise<ChatRow | null> {
     const db = await getDb();
     const result = await db.execute({
-      sql: 'SELECT * FROM chats WHERE slug = ?',
+      sql: "SELECT * FROM chats WHERE slug = ?",
       args: [slug],
     });
     if (result.rows.length === 0) return null;
@@ -150,7 +164,7 @@ export const chats = {
    * misses, so legacy URLs (`/runs/<ULID>`) keep working forever.
    */
   async getBySlugOrId(slugOrId: string): Promise<ChatRow | null> {
-    const { looksLikeSlug } = await import('../chat-slug.js');
+    const { looksLikeSlug } = await import("../chat-slug.js");
     if (looksLikeSlug(slugOrId)) {
       const bySlug = await chats.getBySlug(slugOrId);
       if (bySlug) return bySlug;
@@ -158,25 +172,29 @@ export const chats = {
     return chats.getById(slugOrId);
   },
 
-  async list(opts?: { status?: string; limit?: number; offset?: number }): Promise<ChatRow[]> {
+  async list(opts?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ChatRow[]> {
     const db = await getDb();
-    let sql = 'SELECT * FROM chats';
+    let sql = "SELECT * FROM chats";
     const args: unknown[] = [];
 
     if (opts?.status) {
-      sql += ' WHERE status = ?';
+      sql += " WHERE status = ?";
       args.push(opts.status);
     }
 
-    sql += ' ORDER BY updated_at DESC';
+    sql += " ORDER BY updated_at DESC";
 
     if (opts?.limit) {
-      sql += ' LIMIT ?';
+      sql += " LIMIT ?";
       args.push(opts.limit);
     }
 
     if (opts?.offset) {
-      sql += ' OFFSET ?';
+      sql += " OFFSET ?";
       args.push(opts.offset);
     }
 
@@ -186,12 +204,18 @@ export const chats = {
 
   async getById(id: string): Promise<ChatRow | null> {
     const db = await getDb();
-    const result = await db.execute({ sql: 'SELECT * FROM chats WHERE id = ?', args: [id] });
+    const result = await db.execute({
+      sql: "SELECT * FROM chats WHERE id = ?",
+      args: [id],
+    });
     if (result.rows.length === 0) return null;
     return ChatRowSchema.parse(result.rows[0]);
   },
 
-  async update(id: string, partial: Partial<Omit<ChatRow, 'id' | 'created_at'>>): Promise<ChatRow> {
+  async update(
+    id: string,
+    partial: Partial<Omit<ChatRow, "id" | "created_at">>,
+  ): Promise<ChatRow> {
     const db = await getDb();
     const chat = await chats.getById(id);
     if (!chat) {
@@ -232,12 +256,12 @@ export const chats = {
 
     const row = await chats.getById(id);
     if (!row) throw new Error(`chats.update: row vanished: ${id}`);
-    chatEventsBus.emitChange(row.id, 'updated');
+    chatEventsBus.emitChange(row.id, "updated");
     return row;
   },
 
   async cancel(id: string): Promise<ChatRow> {
-    return chats.update(id, { status: 'cancelled', finished_at: Date.now() });
+    return chats.update(id, { status: "cancelled", finished_at: Date.now() });
   },
 
   /**
@@ -257,7 +281,7 @@ export const chats = {
   async setTemplateSnapshot(id: string, snapshotJson: string): Promise<void> {
     const db = await getDb();
     await db.execute({
-      sql: 'UPDATE chats SET template_snapshot = ? WHERE id = ? AND template_snapshot IS NULL',
+      sql: "UPDATE chats SET template_snapshot = ? WHERE id = ? AND template_snapshot IS NULL",
       args: [snapshotJson, id],
     });
   },
@@ -271,14 +295,17 @@ export const chats = {
    */
   async delete(id: string): Promise<void> {
     const db = await getDb();
-    const tx = await db.transaction('write');
+    const tx = await db.transaction("write");
     try {
       // Phase events first to avoid orphans (no FK enforcement, but the
       // chat semantically owns its events).
-      await tx.execute({ sql: 'DELETE FROM phase_events WHERE chat_id = ?', args: [id] });
-      await tx.execute({ sql: 'DELETE FROM chats WHERE id = ?', args: [id] });
+      await tx.execute({
+        sql: "DELETE FROM phase_events WHERE chat_id = ?",
+        args: [id],
+      });
+      await tx.execute({ sql: "DELETE FROM chats WHERE id = ?", args: [id] });
       await tx.commit();
-      chatEventsBus.emitChange(id, 'deleted');
+      chatEventsBus.emitChange(id, "deleted");
     } catch (e) {
       await tx.rollback();
       throw e;
