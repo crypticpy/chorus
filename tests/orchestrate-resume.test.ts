@@ -304,6 +304,70 @@ describe("POST /chats/:id/resume — happy path", () => {
     expect(runWithMultiplex).toHaveBeenCalledTimes(1);
   });
 
+  it("returns 409 when the previous phase is still active (getActiveRun guard)", async () => {
+    // Reproduces the audit-exit race: status is `blocked` per the DB but
+    // the runner promise from the previous phase hasn't yet resolved its
+    // `.finally` block that deletes the activeRuns entry. A resume POST
+    // in this window must NOT spawn a second runner.
+    const { getActiveRun, runWithMultiplex } =
+      await import("../src/daemon/runner-multiplex");
+    const getActiveRunMock = vi.mocked(getActiveRun);
+    const runMock = vi.mocked(runWithMultiplex);
+    runMock.mockClear();
+    getActiveRunMock.mockReturnValueOnce({
+      promise: Promise.resolve(),
+      // Cast: the route only checks truthiness of the return.
+    } as unknown as ReturnType<typeof getActiveRun>);
+
+    const id = await makeBlockedChatWithAudit(["fix-1"]);
+    const res = await fastify.inject({
+      method: "POST",
+      url: `/chats/${id}/resume`,
+      payload: { answer: JSON.stringify(["fix-1"]) },
+    });
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("conflict");
+    expect(body.error.message).toMatch(/finishing the previous phase/);
+    // Crucially: no runner re-fire.
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the conditional UPDATE misses (concurrent resume already won)", async () => {
+    // Simulate the second of two simultaneous resume POSTs: status flips
+    // to `drafting` between the route's status check and the
+    // tryResumeFromBlocked CAS. The CAS predicate (`WHERE status =
+    // 'blocked'`) finds nothing, returns null, and the handler must
+    // 409 — not silently succeed and not double-fire the runner.
+    const id = await makeBlockedChatWithAudit(["fix-1"]);
+
+    const original = chats.tryResumeFromBlocked.bind(chats);
+    const spy = vi
+      .spyOn(chats, "tryResumeFromBlocked")
+      .mockImplementationOnce(async () => null);
+
+    try {
+      const { runWithMultiplex } =
+        await import("../src/daemon/runner-multiplex");
+      const runMock = vi.mocked(runWithMultiplex);
+      runMock.mockClear();
+      const res = await fastify.inject({
+        method: "POST",
+        url: `/chats/${id}/resume`,
+        payload: { answer: JSON.stringify(["fix-1"]) },
+      });
+      expect(res.statusCode).toBe(409);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe("conflict");
+      expect(body.error.message).toMatch(/status changed concurrently/);
+      expect(runMock).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      // Sanity: ensure the real impl is restored for later tests.
+      void original;
+    }
+  });
+
   it("accepts an empty selection (user trimmed everything)", async () => {
     // Edge case: user opens checklist, deselects every item, hits
     // approve. The body validator only requires a parseable string[];

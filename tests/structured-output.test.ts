@@ -188,6 +188,38 @@ describe("requestStructured", () => {
     }
   });
 
+  it("Path 4: prefers a valid {object} over a misleading [bracket] earlier in prose", async () => {
+    // Reproduces the bug where extractJson picked the FIRST opener and
+    // tried `[stuff]` instead of the real `{json}`. With repair disabled
+    // (maxRepairAttempts=0) the original code would parse `[bracket]`
+    // and fail schema validation; the fix tries both shapes and prefers
+    // the longer slice.
+    const payload = { items: [{ id: "p4", summary: "real payload" }] };
+    const finalText =
+      "I'll mention some [option-A, option-B] before the answer. " +
+      "Here it is: " +
+      JSON.stringify(payload) +
+      " — done.";
+    const scripted = makeScriptedShim(() => [
+      { type: "message_done", finalText },
+    ]);
+
+    const result = await requestStructured({
+      shim: scripted.shim,
+      spawn: baseSpawn,
+      prompt: "list the items",
+      schema: itemsSchema,
+      // Repair loop disabled so we exercise the extractor directly.
+      maxRepairAttempts: 0,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual(payload);
+    }
+    expect(scripted.callCount()).toBe(1);
+  });
+
   it("spawn error: shim yields error event → spawn_error", async () => {
     const scripted = makeScriptedShim(() => [
       { type: "error", kind: "quota_exhausted", message: "out of tokens" },

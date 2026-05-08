@@ -427,6 +427,44 @@ describe("POST /chats/:id/workers/:idx/checkout", () => {
     fs.rmSync(repo, { recursive: true, force: true });
   });
 
+  it("returns validation when repo_path no longer resolves (symlink-swap defense)", async () => {
+    // Build a real repo, point a symlink at it, persist the symlink as
+    // repo_path, then break the link before calling checkout. Without
+    // realpath at the route layer, the handler would happily pass the
+    // dangling path to `git status` (cwd) and emit a confusing
+    // db_error from the shell. With the realpath guard, we get a
+    // structured validation error.
+    const branch = "chorus/test/worker-0";
+    const realRepo = makeGitRepo(branch);
+    const symlink = path.join(os.tmpdir(), `chorus-repo-link-${randomUUID()}`);
+    fs.symlinkSync(realRepo, symlink);
+    const id = await makeChat({
+      repoPath: symlink,
+      manifest: {
+        workers: [
+          {
+            idx: 0,
+            itemId: "fix-1",
+            voiceId: "v",
+            branch,
+            diffStat: "",
+            status: "completed",
+          },
+        ],
+      },
+    });
+    // Break the symlink — target gone.
+    fs.rmSync(realRepo, { recursive: true, force: true });
+    const res = await fastify.inject({
+      method: "POST",
+      url: `/chats/${id}/workers/0/checkout`,
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/repo_path no longer resolves/);
+    fs.rmSync(symlink, { force: true });
+  });
+
   it("checks out the worker branch on the happy path", async () => {
     const branch = "chorus/test/worker-0";
     const repo = makeGitRepo(branch);

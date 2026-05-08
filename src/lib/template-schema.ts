@@ -273,8 +273,17 @@ const OrchestratePhaseSchema = z.object({
 
   // {chatId} and {idx} are substituted by the runner. Default keeps the
   // chorus/* prefix so it matches the existing ship-phase branch
-  // convention.
-  branchPrefix: z.string().default("chorus/{chatId}/worker-{idx}"),
+  // convention. Strict charset rejects branchPrefix values that could
+  // be re-interpreted as `git`/`gh` flags (`^-`) or shell metachars —
+  // a malicious template could otherwise smuggle `--orphan-{chatId}`
+  // through the manifest into `git checkout <branch>` and mutate HEAD.
+  branchPrefix: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9{][A-Za-z0-9._/{}-]*$/,
+      "branchPrefix must start with an alphanumeric or `{` and contain only alphanumerics, `.`, `_`, `/`, `-`, and `{}` placeholders",
+    )
+    .default("chorus/{chatId}/worker-{idx}"),
 
   // Cap concurrent worker spawns to keep system load sane on large
   // checklists. Default 3 mirrors the typical reviewer slot count.
@@ -342,7 +351,17 @@ export const OrchestrateManifestEntrySchema = z.object({
   idx: z.number().int().min(0),
   itemId: z.string().min(1),
   voiceId: z.string().min(1),
-  branch: z.string().min(1),
+  // Same charset as branchPrefix minus the `{}` placeholders — by the
+  // time a manifest entry is written, all substitutions are resolved.
+  // Rejects `^-` so a manifest tampered-with on disk can't sneak a
+  // `--orphan` style value into `git checkout <branch>` or `gh pr
+  // create --head <branch>`.
+  branch: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9._/-]*$/,
+      "branch must start with an alphanumeric and contain only alphanumerics, `.`, `_`, `/`, and `-`",
+    ),
   diffStat: z.string(),
   status: z.enum(["completed", "failed"]),
   error: z.string().optional(),

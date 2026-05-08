@@ -265,6 +265,34 @@ export const chats = {
   },
 
   /**
+   * Atomically transition a `blocked` chat to `drafting` and bump
+   * current_phase_idx. Returns the updated row when the transition
+   * landed, or `null` when the row was no longer in `blocked` status
+   * (concurrent resume already won the race). The conditional WHERE
+   * clause is the load-bearing piece: two simultaneous resume POSTs
+   * cannot both flip the row, so the runner can't be double-fired.
+   */
+  async tryResumeFromBlocked(
+    id: string,
+    nextPhaseIdx: number,
+  ): Promise<ChatRow | null> {
+    const db = await getDb();
+    const result = await db.execute({
+      sql: `
+        UPDATE chats
+        SET status = 'drafting', current_phase_idx = ?, updated_at = ?
+        WHERE id = ? AND status = 'blocked'
+      `,
+      args: [nextPhaseIdx, Date.now(), id],
+    });
+    if (!result.rowsAffected || result.rowsAffected === 0) return null;
+    const row = await chats.getById(id);
+    if (!row) return null;
+    chatEventsBus.emitChange(row.id, "updated");
+    return row;
+  },
+
+  /**
    * Write-once template snapshot. The runner calls this on first fire so
    * the cockpit can render old runs against the template they actually
    * used, even if the live template gets edited later.

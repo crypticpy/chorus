@@ -720,6 +720,21 @@ export function registerChatRoutes(
         );
       }
 
+      // Race-guard: a runner is still in the active set when the
+      // audit phase has just flipped status=blocked but its `.finally`
+      // hasn't yet released the slot, OR when a parallel resume click
+      // is already mid-flight. Either way, firing a second runner
+      // here would race the chatDir, branch creation, and manifest
+      // writes. Reject loudly so the user retries after the slot
+      // clears (≤ a few seconds).
+      if (getActiveRun(chatId)) {
+        return sendError(
+          reply,
+          "conflict",
+          `Chat ${param} is still finishing the previous phase — retry in a moment`,
+        );
+      }
+
       const { answer } = request.body;
       if (typeof answer !== "string" || answer.length === 0) {
         return sendError(reply, "validation", "answer is required");
@@ -844,12 +859,18 @@ export function registerChatRoutes(
         );
       }
 
-      // Flip status + phase index. The runner reads
-      // chat.current_phase_idx via runner-multiplex when re-fired.
-      const updated = await chats.update(chatId, {
-        status: "drafting",
-        current_phase_idx: orchestrateIdx,
-      });
+      // Atomic flip: only succeeds when the row is still status=blocked.
+      // Defense-in-depth against the activeRuns guard above — a parallel
+      // resume that slipped past the in-memory check still loses here
+      // because only one UPDATE can match `status='blocked'`.
+      const updated = await chats.tryResumeFromBlocked(chatId, orchestrateIdx);
+      if (!updated) {
+        return sendError(
+          reply,
+          "conflict",
+          `Chat ${param} status changed concurrently — refresh and retry`,
+        );
+      }
 
       // Re-fire the runner. Fire-and-forget; SSE re-attachers latch
       // onto the fresh activeRuns entry. Catch the promise so an
@@ -1083,7 +1104,18 @@ export function registerChatRoutes(
         );
       }
 
-      const repoPath = existing.repo_path;
+      // Re-realpath defends against a symlink swap between create-time
+      // canonicalization and now. Mirrors the rerun-path pattern.
+      let repoPath: string;
+      try {
+        repoPath = fs.realpathSync(existing.repo_path);
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `repo_path no longer resolves: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       // Refuse on a dirty working tree — `git checkout` would otherwise
       // either fail with confusing output or silently mix the user's
       // staged work with the worker's branch state.
@@ -1221,7 +1253,16 @@ export function registerChatRoutes(
         );
       }
 
-      const repoPath = existing.repo_path;
+      let repoPath: string;
+      try {
+        repoPath = fs.realpathSync(existing.repo_path);
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `repo_path no longer resolves: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       const title = `chorus orchestrate worker-${worker.idx}: ${worker.itemId}`;
       const body =
         `Auto-opened by chorus from chat ${existing.id}, worker ${worker.idx}.\n\n` +

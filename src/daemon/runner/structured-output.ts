@@ -142,16 +142,31 @@ function extractJson(finalText: string): unknown {
     return JSON.parse(anyFence[1].trim());
   }
 
-  // Path 4: first { or [ to last } or ] — last resort for prose-wrapped
-  // JSON without a code fence.
-  const firstBrace = finalText.search(/[{[]/);
-  if (firstBrace >= 0) {
-    const opener = finalText[firstBrace];
-    const closer = opener === "{" ? "}" : "]";
-    const lastClose = finalText.lastIndexOf(closer);
-    if (lastClose > firstBrace) {
-      return JSON.parse(finalText.slice(firstBrace, lastClose + 1));
+  // Path 4: try {...} and [...] independently — last resort for
+  // prose-wrapped JSON without a code fence. We can't pick by "first
+  // opener wins" because prose like `mentions [stuff] before {object}`
+  // would extract `[stuff]` instead of the real payload. Try both
+  // shapes; if both parse, prefer the longer slice (more content
+  // captured = more likely the real payload).
+  const candidates: { value: unknown; length: number }[] = [];
+  for (const [open, close] of [
+    ["{", "}"],
+    ["[", "]"],
+  ] as const) {
+    const first = finalText.indexOf(open);
+    const last = finalText.lastIndexOf(close);
+    if (first >= 0 && last > first) {
+      const slice = finalText.slice(first, last + 1);
+      try {
+        candidates.push({ value: JSON.parse(slice), length: slice.length });
+      } catch {
+        // fall through to the other shape / re-throw below
+      }
     }
+  }
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.length - a.length);
+    return candidates[0].value;
   }
 
   // Re-throw the original direct-parse error so the caller has a
