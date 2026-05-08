@@ -463,8 +463,11 @@ function run(
  * actually overlap. Per-call timeout defaults to 15s (these are
  * metadata reads, not push/clone), bounded by the caller via
  * `timeoutMs`.
+ *
+ * Exported so other daemon modules (github-pr.ts) can fan out gh CLI
+ * calls without re-implementing the spawn/timeout dance.
  */
-function runAsync(
+export function runAsync(
   command: string,
   args: string[],
   opts: { cwd: string; timeoutMs?: number },
