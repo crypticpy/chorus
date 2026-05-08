@@ -257,6 +257,37 @@ export const CreateChatSchema = z.object({
     ),
 });
 
+/**
+ * Schema for `review_pr` — fetches a GitHub PR via gh CLI and seeds a
+ * review-only chat from the synthesized artifact. Same `ZodEffects`-strips-
+ * properties hazard as `CreateChatSchema` — kept as a plain `z.object()`.
+ */
+export const ReviewPrSchema = z.object({
+  url: z
+    .string()
+    .min(1, "url is required")
+    .describe(
+      "Full GitHub PR URL (e.g. https://github.com/owner/repo/pull/123). " +
+        "The chorus daemon shells out to `gh` on the host machine to fetch " +
+        "PR meta, diff, and existing comments.",
+    ),
+  templateId: z
+    .string()
+    .optional()
+    .describe(
+      "Template id from `list_templates`. Must be a review-only template " +
+        "(e.g. `review-only`). Defaults to `review-only` when omitted.",
+    ),
+  repoPath: z
+    .string()
+    .optional()
+    .describe(
+      "Optional absolute path to the PR's repo on local disk. Used as the " +
+        "cwd for `gh`. Pass when the repo is checked out locally so the " +
+        "chat row retains the path for follow-up flows.",
+    ),
+});
+
 export const WaitForChatSchema = z.object({
   chatId: z.string().min(1, "chatId is required"),
   timeoutSec: z.number().int().positive().optional().default(600),
@@ -452,6 +483,30 @@ export async function createChat(input: unknown) {
       templateId,
       files: parsed.files,
       ...(parsed.artifact !== undefined ? { artifact: parsed.artifact } : {}),
+      ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
+    }),
+  });
+
+  return ChatRefSchema.parse(chatRowToRef(result));
+}
+
+/**
+ * Seed a review-only chat from a GitHub PR URL. The daemon fetches PR
+ * meta + diff + existing comments via `gh` and composes an artifact;
+ * we just forward the request and return the resulting chat ref.
+ *
+ * Defaults `templateId` to `review-only` so a caller can pass just a
+ * URL and get a useful run.
+ */
+export async function reviewPr(input: unknown) {
+  const parsed = ReviewPrSchema.parse(input);
+  const templateId = parsed.templateId ?? "review-only";
+
+  const result = await daemonFetch<DaemonChatRow>("/chats/from-pr", {
+    method: "POST",
+    body: JSON.stringify({
+      url: parsed.url,
+      templateId,
       ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
     }),
   });
