@@ -1,6 +1,12 @@
 "use client";
 
-import { ArrowRight, GitPullRequest, Info, Layers } from "lucide-react";
+import {
+  ArrowRight,
+  FolderSearch,
+  GitPullRequest,
+  Info,
+  Layers,
+} from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState, useTransition } from "react";
 import { AppShell } from "@/components/app-shell";
@@ -13,6 +19,7 @@ import {
   listTemplates,
 } from "@/lib/api";
 import { getBillingMode, type BillingMode } from "@/lib/api/settings";
+import { AUDIT_PRESETS, type AuditPreset } from "@/lib/template-schema";
 import { isReviewOnlyTemplate, type Template } from "@/lib/types";
 import {
   deriveReviewOnlyTitle,
@@ -21,6 +28,19 @@ import {
 } from "./helpers";
 import { Picker } from "./picker";
 import { PromptCard } from "./prompt-card";
+
+/**
+ * One-liner hints displayed under each audit preset. Lives client-side
+ * because the actual preset prompts are loaded daemon-side from
+ * `src/daemon/presets/` — these are just summary chips.
+ */
+const AUDIT_PRESET_HINTS: Record<AuditPreset, string> = {
+  "de-slopify": "Cut clutter, dead code, and AI-tell phrasing.",
+  "monolith-breakdown": "Identify cleavage planes and module extractions.",
+  "code-review": "Bugs, smells, missing edge cases.",
+  "engineering-review": "Test coverage, observability, error handling.",
+  "architecture-review": "Boundaries, dependency direction, cohesion.",
+};
 
 export default function NewChatPage() {
   return (
@@ -99,8 +119,12 @@ function NewChatPageInner() {
   // via the daemon's gh shell-out and seeds a review-only chat from the
   // synthesized artifact. PR mode requires a review-only template; we
   // surface a validation error if the picker is on a doer template.
-  const [mode, setMode] = useState<"prompt" | "pr">("prompt");
+  // 'audit' points chorus at a repo and a preset lens (de-slopify,
+  // monolith-breakdown, …); the preset selects the matching audit-*
+  // template, which the daemon ships as a built-in.
+  const [mode, setMode] = useState<"prompt" | "pr" | "audit">("prompt");
   const [prUrl, setPrUrl] = useState("");
+  const [auditPreset, setAuditPreset] = useState<AuditPreset>("code-review");
 
   const reviewOnly = isReviewOnlyTemplate(template);
   const artifactSpec = reviewOnly ? template?.phases?.[0]?.artifact : undefined;
@@ -132,6 +156,41 @@ function NewChatPageInner() {
       } catch (err) {
         setCreateError(
           err instanceof DaemonError ? err.message : "Failed to fetch PR",
+        );
+      }
+    });
+  }
+
+  async function handleStartAudit() {
+    const trimmedRepo = repoPath.trim();
+    if (trimmedRepo.length === 0) {
+      setCreateError("Repo path is required for an audit run.");
+      return;
+    }
+    if (!trimmedRepo.startsWith("/")) {
+      setCreateError("Repo path must be absolute (start with `/`).");
+      return;
+    }
+    // Convention: each preset ships as its own built-in template id so
+    // the daemon picks up the right system prompt + reviewer wiring.
+    // The audit-template suite lands with the audit-phase implementation;
+    // until then, the daemon returns a clean "template not found" error
+    // here, which surfaces in createError.
+    const auditTemplateId = `audit-${auditPreset}`;
+    setCreateError(null);
+    startTransition(async () => {
+      try {
+        const repoBasename = trimmedRepo.replace(/\/+$/, "").split("/").pop();
+        const chat = await createChat({
+          work: `Audit ${repoBasename ?? trimmedRepo} (${auditPreset})`,
+          templateId: auditTemplateId,
+          repoPath: trimmedRepo,
+          yolo: yoloMode,
+        });
+        router.push(`/runs/${chat.slug || chat.id}`);
+      } catch (err) {
+        setCreateError(
+          err instanceof DaemonError ? err.message : "Failed to start audit",
         );
       }
     });
@@ -274,9 +333,28 @@ function NewChatPageInner() {
             <GitPullRequest className="h-3.5 w-3.5" />
             GitHub PR
           </button>
+          <button
+            role="tab"
+            aria-selected={mode === "audit"}
+            type="button"
+            onClick={() => {
+              setMode("audit");
+              setCreateError(null);
+            }}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              mode === "audit"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <FolderSearch className="h-3.5 w-3.5" />
+            Audit a repo
+          </button>
         </div>
 
-        <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div
+          className={`mb-4 flex flex-wrap items-center gap-2 ${mode === "audit" ? "hidden" : ""}`}
+        >
           <Picker
             icon={<Layers className="h-3.5 w-3.5" />}
             label="Template"
@@ -341,7 +419,7 @@ function NewChatPageInner() {
           </Picker>
         </div>
 
-        {mode === "prompt" ? (
+        {mode === "prompt" && (
           <PromptCard
             template={template}
             prompt={prompt}
@@ -354,7 +432,8 @@ function NewChatPageInner() {
             isPending={isPending}
             onStart={handleStartRun}
           />
-        ) : (
+        )}
+        {mode === "pr" && (
           <div className="mb-4 rounded-lg border border-border bg-card p-4">
             <label
               htmlFor="pr-url"
@@ -395,6 +474,75 @@ function NewChatPageInner() {
             </button>
           </div>
         )}
+        {mode === "audit" && (
+          <div className="mb-4 rounded-lg border border-border bg-card p-4">
+            <div className="mb-3">
+              <span className="block text-sm font-medium text-foreground">
+                Audit lens
+              </span>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Each preset frames the audit reviewer's worldview. The reviewer
+                reads your repo and emits a structured checklist — you approve
+                it before the orchestrator fans the work out to workers.
+              </p>
+            </div>
+            <div className="mb-4 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              {AUDIT_PRESETS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setAuditPreset(p)}
+                  className={`rounded-md border px-3 py-2 text-left text-xs transition ${
+                    auditPreset === p
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-background hover:border-foreground/30"
+                  }`}
+                >
+                  <div className="font-mono text-[11px] uppercase tracking-wide">
+                    {p}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    {AUDIT_PRESET_HINTS[p]}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <label
+              htmlFor="audit-repo"
+              className="block text-sm font-medium text-foreground"
+            >
+              Repo path
+            </label>
+            <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
+              Absolute path to the repo on this machine. Workers branch off HEAD
+              into{" "}
+              <code className="rounded bg-muted px-1">
+                chorus/&lt;chatId&gt;/worker-N
+              </code>{" "}
+              when the orchestrator phase fires.
+            </p>
+            <input
+              id="audit-repo"
+              type="text"
+              value={repoPath}
+              onChange={(e) => setRepoPath(e.target.value)}
+              placeholder="/absolute/path/to/repo"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              onClick={handleStartAudit}
+              disabled={isPending || repoPath.trim().length === 0}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isPending ? "Starting audit…" : "Run audit"}
+              {!isPending && <ArrowRight className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        )}
 
         {overCap && mode === "prompt" && (
           <div className="mb-4 flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-200">
@@ -415,9 +563,11 @@ function NewChatPageInner() {
         {/* Always render so the row's vertical position is stable across
             templates. Disabled on review-only since there's no doer to make
             edits and no Ship phase to open a PR — but keeping it visible
-            tells the user what they'd unlock by switching templates. */}
+            tells the user what they'd unlock by switching templates.
+            Hidden in audit mode where the repo path lives inside the
+            audit card. */}
         <div
-          className={`mb-4 rounded-lg border border-dashed border-border bg-card/30 p-4 ${reviewOnly ? "opacity-50" : ""}`}
+          className={`mb-4 rounded-lg border border-dashed border-border bg-card/30 p-4 ${reviewOnly ? "opacity-50" : ""} ${mode === "audit" ? "hidden" : ""}`}
         >
           <div className="mb-2 flex items-center gap-2">
             <span className="text-sm font-medium text-foreground">
