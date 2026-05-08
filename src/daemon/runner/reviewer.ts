@@ -7,22 +7,22 @@
  *
  * Tested by tests/runner-reviewer.test.ts.
  */
-import * as fs from 'fs';
-import * as path from 'path';
-import type { StandardPhase } from '../../lib/template-schema.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from '../../lib/template-schema.js';
-import type { AgentShim } from '../agents/types.js';
-import { getPermissions } from '../../lib/settings/permissions.js';
+import * as fs from "fs";
+import * as path from "path";
+import type { StandardPhase } from "../../lib/template-schema.js";
+import { DEFAULT_PHASE_TIMEOUT_MS } from "../../lib/template-schema.js";
+import type { AgentShim } from "../agents/types.js";
+import { getPermissions } from "../../lib/settings/permissions.js";
 import {
   classifyOpenRouterError,
   getHealth,
   recordHealth,
   type CliLineage,
-} from '../../lib/cli-health.js';
-import { synthesizeCostUsd } from '../../lib/model-pricing.js';
-import { StreamFileWriter } from './stream-file-writer.js';
-import { verdictFromReviewerText } from './verdict.js';
-import type { RunnerEvent } from './types.js';
+} from "../../lib/cli-health.js";
+import { synthesizeCostUsd } from "../../lib/model-pricing.js";
+import { StreamFileWriter } from "./stream-file-writer.js";
+import { verdictFromReviewerText } from "./verdict.js";
+import type { RunnerEvent } from "./types.js";
 
 export async function runReviewerHeadless(args: {
   shim: AgentShim;
@@ -36,6 +36,15 @@ export async function runReviewerHeadless(args: {
   askContent: string;
   answerFile: string;
   reviewerDir: string;
+  /**
+   * When the chat targets a real repo, run the reviewer subprocess with
+   * the repo as cwd so sandboxed CLIs (notably Gemini) can read its
+   * files and run `gh` against it. Without this, Gemini's workspace
+   * allowlist contains only the chorus scratch dir and the reviewer
+   * confesses "I cannot access the repository" mid-review. Mirrors the
+   * doer's `doerCwd = repoPath ?? doerDir` choice in doer-driver.ts.
+   */
+  repoPath?: string;
   abortSignal: AbortSignal;
   onEvent: (e: RunnerEvent) => void;
 }): Promise<boolean | null> {
@@ -51,6 +60,7 @@ export async function runReviewerHeadless(args: {
     askContent,
     answerFile,
     reviewerDir,
+    repoPath,
     abortSignal,
     onEvent,
   } = args;
@@ -59,7 +69,7 @@ export async function runReviewerHeadless(args: {
 
   const perms = await getPermissions();
   const startedAt = Date.now();
-  let accumulated = '';
+  let accumulated = "";
   let finalText: string | undefined;
   let errored = false;
   let capturedUsage:
@@ -77,11 +87,17 @@ export async function runReviewerHeadless(args: {
   // went wrong (opencode lock contention, codex quota, etc.).
   let errorSummary: { kind: string; message: string } | undefined;
 
-  fs.writeFileSync(answerFile, '');
+  fs.writeFileSync(answerFile, "");
   const writer = new StreamFileWriter(answerFile);
 
+  // Use the repo as cwd when the chat targets one — mirrors doer-driver.ts
+  // and gives sandboxed reviewers (Gemini) read access to the actual code.
+  // Falls back to the chorus reviewer scratch dir when no repo is bound.
+  const reviewerCwd =
+    repoPath && fs.existsSync(repoPath) ? repoPath : reviewerDir;
+
   const stream = shim.runHeadless({
-    cwd: reviewerDir,
+    cwd: reviewerCwd,
     promptText: askContent,
     model: candidateModel,
     sandbox: perms.sandboxProfile,
@@ -103,48 +119,52 @@ export async function runReviewerHeadless(args: {
   try {
     for await (const event of stream) {
       eventCount += 1;
-      if (event.type === 'text_delta') {
+      if (event.type === "text_delta") {
         accumulated += event.text;
         writer.write(event.text);
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'reviewer',
+            role: "reviewer",
             agent: `${agentName}-${reviewerIdx}`,
-            output: accumulated.slice(-500),
+            // 8 KiB tail. The previous 500-byte slice clipped the
+            // closing summary mid-word; full text remains on disk
+            // at answerFile and is pointed to by participant_done
+            // for any consumer that needs more than the live tail.
+            output: accumulated.slice(-8 * 1024),
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'tool_call_start') {
+      } else if (event.type === "tool_call_start") {
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'reviewer',
+            role: "reviewer",
             agent: `${agentName}-${reviewerIdx}`,
             tool: event.tool,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'progress') {
+      } else if (event.type === "progress") {
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'reviewer',
+            role: "reviewer",
             agent: `${agentName}-${reviewerIdx}`,
             elapsedMs: event.elapsedMs,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'message_done') {
+      } else if (event.type === "message_done") {
         finalText = event.finalText;
         if (event.usage) capturedUsage = event.usage;
         // Same guard as the doer side: don't truncate accumulated deltas
@@ -154,12 +174,12 @@ export async function runReviewerHeadless(args: {
         writer.flushNow();
         if (event.finalText.trim().length === 0) {
           const existing = fs.existsSync(answerFile)
-            ? fs.readFileSync(answerFile, 'utf-8')
-            : '';
+            ? fs.readFileSync(answerFile, "utf-8")
+            : "";
           if (!/\n##\s*DONE\s*\n?$/i.test(existing.trimEnd())) {
             fs.appendFileSync(
               answerFile,
-              existing.endsWith('\n') ? '\n## DONE\n' : '\n\n## DONE\n',
+              existing.endsWith("\n") ? "\n## DONE\n" : "\n\n## DONE\n",
             );
           }
         } else {
@@ -168,7 +188,7 @@ export async function runReviewerHeadless(args: {
           // an answer with `... ## DONE\n\n\n## DONE\n` — the verdict
           // heuristic doesn't care, but it looks unprofessional in the
           // cockpit and breaks tools that grep for a single sentinel.
-          const trimmedTail = event.finalText.replace(/\s+$/, '');
+          const trimmedTail = event.finalText.replace(/\s+$/, "");
           const alreadyHasSentinel = /\n##\s*DONE\s*$/i.test(trimmedTail);
           const body = alreadyHasSentinel
             ? `${trimmedTail}\n`
@@ -198,7 +218,10 @@ export async function runReviewerHeadless(args: {
             usageForStats.cachedInputTokens)
         ) {
           try {
-            const synth = await synthesizeCostUsd(candidateModel, usageForStats);
+            const synth = await synthesizeCostUsd(
+              candidateModel,
+              usageForStats,
+            );
             if (synth !== undefined) {
               usageForStats = { ...usageForStats, costUsd: synth };
             }
@@ -208,12 +231,12 @@ export async function runReviewerHeadless(args: {
         }
         try {
           fs.writeFileSync(
-            path.join(reviewerDir, '_stats.json'),
+            path.join(reviewerDir, "_stats.json"),
             JSON.stringify({
               durationMs: Date.now() - startedAt,
               ...(usageForStats ? { usage: usageForStats } : {}),
             }),
-            'utf-8',
+            "utf-8",
           );
         } catch {
           /* sidecar is informational; ignore write errors */
@@ -224,16 +247,20 @@ export async function runReviewerHeadless(args: {
         // duplicating durationMs/usage in the SSE payload was dead bytes.
         onEvent({
           chatId,
-          type: 'participant_done',
+          type: "participant_done",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'reviewer',
+            role: "reviewer",
             agent: `${agentName}-${reviewerIdx}`,
+            // Pointer to the on-disk full reviewer output. MCP clients
+            // can read this when the streamed `output` slice was
+            // truncated; the tail in phase_progress is for live UI.
+            outputPath: answerFile,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'error') {
+      } else if (event.type === "error") {
         errored = true;
         // Surface OpenRouter HTTP failures (insufficient credits, bad key,
         // rate-limit, upstream outage) as health state so the home-page
@@ -243,11 +270,14 @@ export async function runReviewerHeadless(args: {
         const classified = classifyOpenRouterError(event.kind, event.message);
         if (classified) {
           recordHealth({
-            lineage: 'openrouter',
+            lineage: "openrouter",
             status: classified.status,
             message: classified.message,
           }).catch((healthErr: unknown) => {
-            console.error('[chorus] recordHealth failed for openrouter:', healthErr);
+            console.error(
+              "[chorus] recordHealth failed for openrouter:",
+              healthErr,
+            );
           });
         }
         // First error wins by default — but a more-specific later
@@ -257,13 +287,13 @@ export async function runReviewerHeadless(args: {
         // `quota_exhausted` from stderr with the reset window. Without
         // this upgrade rule the cockpit shows the vague first message
         // and the user has no idea when their quota resets.
-        const VAGUE_KINDS = new Set(['gemini_result_error']);
+        const VAGUE_KINDS = new Set(["gemini_result_error"]);
         const SPECIFIC_KINDS = new Set([
-          'quota_exhausted',
-          'rate_limit',
-          'auth_error',
-          'sandbox_unsupported',
-          'cli_not_in_path',
+          "quota_exhausted",
+          "rate_limit",
+          "auth_error",
+          "sandbox_unsupported",
+          "cli_not_in_path",
         ]);
         const isUpgrade =
           errorSummary &&
@@ -277,13 +307,13 @@ export async function runReviewerHeadless(args: {
         }
         onEvent({
           chatId,
-          type: 'cli_error',
+          type: "cli_error",
           payload: {
             phaseId: phase.id,
             phaseKind: phase.kind,
             phaseIdx: 0,
             round,
-            role: 'reviewer',
+            role: "reviewer",
             agent: `${agentName}-${reviewerIdx}`,
             error: {
               kind: event.kind,
@@ -300,20 +330,20 @@ export async function runReviewerHeadless(args: {
     errored = true;
     const message = err instanceof Error ? err.message : String(err);
     if (!errorSummary) {
-      errorSummary = { kind: 'stream_failure', message };
+      errorSummary = { kind: "stream_failure", message };
     }
     onEvent({
       chatId,
-      type: 'cli_error',
+      type: "cli_error",
       payload: {
         phaseId: phase.id,
         phaseKind: phase.kind,
         phaseIdx: 0,
         round,
-        role: 'reviewer',
+        role: "reviewer",
         agent: `${agentName}-${reviewerIdx}`,
         error: {
-          kind: 'stream_failure',
+          kind: "stream_failure",
           message,
           lineage: candidateLineage,
         },
@@ -335,7 +365,7 @@ export async function runReviewerHeadless(args: {
     if (eventCount === 0 && !errorSummary) {
       errored = true;
       errorSummary = {
-        kind: 'no_output',
+        kind: "no_output",
         message:
           `${candidateLineage} CLI closed without emitting any output. ` +
           `Likely a transport bug (e.g. opencode 1.14.x writes JSON only to a TTY) ` +
@@ -347,7 +377,12 @@ export async function runReviewerHeadless(args: {
     // Otherwise post-mortem inspection sees an empty file with no
     // signal — exactly the silent-failure that hid opencode-cli-2's
     // failure on the PR #10 review chat.
-    if (errored && accumulated.length === 0 && (!finalText || finalText.length === 0) && errorSummary) {
+    if (
+      errored &&
+      accumulated.length === 0 &&
+      (!finalText || finalText.length === 0) &&
+      errorSummary
+    ) {
       try {
         // For quota / rate-limit failures, the error-detector (tmux path)
         // or recordHealth call (HTTP shim path) has already stamped the
@@ -358,7 +393,7 @@ export async function runReviewerHeadless(args: {
         let resetAt: number | undefined;
         try {
           const h = await getHealth(candidateLineage as CliLineage);
-          if (typeof h.resetAt === 'number' && h.resetAt > Date.now()) {
+          if (typeof h.resetAt === "number" && h.resetAt > Date.now()) {
             resetAt = h.resetAt;
           }
         } catch {
@@ -369,8 +404,10 @@ export async function runReviewerHeadless(args: {
           `## REVIEWER FAILED\n\n` +
             `**Kind:** ${errorSummary.kind}\n` +
             `**Lineage:** ${candidateLineage}\n` +
-            `**Model:** ${candidateModel ?? '(default)'}\n` +
-            (resetAt ? `**Resets:** ${new Date(resetAt).toISOString()}\n` : '') +
+            `**Model:** ${candidateModel ?? "(default)"}\n` +
+            (resetAt
+              ? `**Resets:** ${new Date(resetAt).toISOString()}\n`
+              : "") +
             `\n${errorSummary.message}\n`,
         );
       } catch {
@@ -387,11 +424,11 @@ export async function runReviewerHeadless(args: {
     // Append-only JSONL keyed by (round, model) so multi-step fallback
     // chains leave a trail.
     if (errored) {
-      const errorKind = errorSummary?.kind ?? 'unknown';
-      const errorMessage = errorSummary?.message ?? '(no message captured)';
+      const errorKind = errorSummary?.kind ?? "unknown";
+      const errorMessage = errorSummary?.message ?? "(no message captured)";
       const durationMs = Date.now() - startedAt;
       try {
-        const attemptsFile = path.join(reviewerDir, '_attempts.jsonl');
+        const attemptsFile = path.join(reviewerDir, "_attempts.jsonl");
         const entry = {
           ts: Date.now(),
           round,
@@ -401,7 +438,7 @@ export async function runReviewerHeadless(args: {
           errorMessage,
           durationMs,
         };
-        fs.appendFileSync(attemptsFile, JSON.stringify(entry) + '\n');
+        fs.appendFileSync(attemptsFile, JSON.stringify(entry) + "\n");
       } catch {
         /* best-effort — diagnostics shouldn't fail the run */
       }
@@ -412,7 +449,7 @@ export async function runReviewerHeadless(args: {
       // the openrouter shim's own warn lines.
       console.warn(
         `[reviewer] attempt failed chat=${chatId} round=${round} ` +
-          `lineage=${candidateLineage} model=${candidateModel ?? '(default)'} ` +
+          `lineage=${candidateLineage} model=${candidateModel ?? "(default)"} ` +
           `kind=${errorKind} duration_ms=${durationMs} ` +
           `message=${JSON.stringify(errorMessage).slice(0, 300)}`,
       );
@@ -425,15 +462,15 @@ export async function runReviewerHeadless(args: {
       const err = writer.lastError();
       onEvent({
         chatId,
-        type: 'cli_warning',
+        type: "cli_warning",
         payload: {
           phaseId: phase.id,
           round,
-          role: 'reviewer',
+          role: "reviewer",
           agent: `${agentName}-${reviewerIdx}`,
-          reason: 'stream_writer_dead',
-          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : 'unknown'}`,
-          cta: 'Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.',
+          reason: "stream_writer_dead",
+          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : "unknown"}`,
+          cta: "Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.",
         },
         ts: Date.now(),
       });
@@ -446,10 +483,10 @@ export async function runReviewerHeadless(args: {
   // the verdict heuristic can't classify. Reading the file picks up both
   // the tool-written verdict AND any text_delta-appended assistant text,
   // matching what the cockpit and CLI both display to the user.
-  let onDisk = '';
+  let onDisk = "";
   try {
     if (fs.existsSync(answerFile)) {
-      onDisk = fs.readFileSync(answerFile, 'utf-8');
+      onDisk = fs.readFileSync(answerFile, "utf-8");
     }
   } catch {
     /* best-effort — fall through to streamed content */

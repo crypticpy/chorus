@@ -9,9 +9,9 @@
  * Extracted out of runner.ts so the streaming hot paths can be split later
  * without breaking these contracts.
  */
-import * as fs from 'fs';
-import * as path from 'path';
-import type { Phase } from '../../lib/template-schema.js';
+import * as fs from "fs";
+import * as path from "path";
+import type { Phase } from "../../lib/template-schema.js";
 
 // Per-file cap and total cap when inlining attached files into a prompt.
 // Numbers chosen to keep prompts comfortably within Anthropic / OpenAI / Google
@@ -37,7 +37,7 @@ export function packAttachedFiles(
   paths: string[] | undefined,
   repoPath: string | undefined,
 ): string {
-  if (!paths || paths.length === 0) return '';
+  if (!paths || paths.length === 0) return "";
 
   const chunks: string[] = [];
   let totalBytes = 0;
@@ -69,12 +69,15 @@ export function packAttachedFiles(
       try {
         // O_NOFOLLOW on Linux/macOS fails with ELOOP if path is a symlink.
         // On Windows, O_NOFOLLOW is unsupported; fall back to lstat+read.
-        if (process.platform !== 'win32') {
+        if (process.platform !== "win32") {
           try {
-            fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            fd = fs.openSync(
+              abs,
+              fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+            );
           } catch (openErr) {
             // ELOOP = symlink detected via O_NOFOLLOW
-            if (openErr instanceof Error && openErr.message.includes('ELOOP')) {
+            if (openErr instanceof Error && openErr.message.includes("ELOOP")) {
               chunks.push(`### \`${display}\` — _symlink rejected, skipping_`);
               continue;
             }
@@ -85,7 +88,7 @@ export function packAttachedFiles(
             chunks.push(`### \`${display}\` — _not a regular file, skipping_`);
             continue;
           }
-          body = fs.readFileSync(abs, 'utf-8');
+          body = fs.readFileSync(abs, "utf-8");
         } else {
           // Windows fallback: lstat + read (not race-proof but best effort)
           const lstat = fs.lstatSync(abs);
@@ -97,7 +100,7 @@ export function packAttachedFiles(
             chunks.push(`### \`${display}\` — _not a regular file, skipping_`);
             continue;
           }
-          body = fs.readFileSync(abs, 'utf-8');
+          body = fs.readFileSync(abs, "utf-8");
         }
       } finally {
         if (fd >= 0) fs.closeSync(fd);
@@ -120,14 +123,14 @@ export function packAttachedFiles(
     }
 
     totalBytes += slice.length;
-    const ext = path.extname(display).slice(1) || '';
+    const ext = path.extname(display).slice(1) || "";
     chunks.push(
-      `### \`${display}\`${truncated ? ` (truncated to ${ATTACHED_FILE_MAX_BYTES} bytes)` : ''}\n\`\`\`${ext}\n${slice}\n\`\`\``,
+      `### \`${display}\`${truncated ? ` (truncated to ${ATTACHED_FILE_MAX_BYTES} bytes)` : ""}\n\`\`\`${ext}\n${slice}\n\`\`\``,
     );
   }
 
-  if (chunks.length === 0) return '';
-  return ['## Attached files', '', ...chunks, ''].join('\n');
+  if (chunks.length === 0) return "";
+  return ["## Attached files", "", ...chunks, ""].join("\n");
 }
 
 /**
@@ -151,17 +154,19 @@ export function packAttachedFiles(
  *     try to break out is the only escape vector, and we strip it.
  */
 function personaPromptBlock(systemPrompt: string | undefined): string {
-  if (!systemPrompt || systemPrompt.trim().length === 0) return '';
+  if (!systemPrompt || systemPrompt.trim().length === 0) return "";
   // Defensive escape: strip any closing tag that would break out of our
   // fence. Keeps the worst case (a malicious persona) from rewriting the
   // task framing. Open tags are harmless; only the closer matters.
-  const sanitized = systemPrompt.trim().replace(/<\/persona_instructions>/gi, '');
+  const sanitized = systemPrompt
+    .trim()
+    .replace(/<\/persona_instructions>/gi, "");
   return [
-    '<persona_instructions>',
+    "<persona_instructions>",
     sanitized,
-    '</persona_instructions>',
-    '',
-  ].join('\n');
+    "</persona_instructions>",
+    "",
+  ].join("\n");
 }
 
 /** Build the doer ask.md prompt for one phase iteration. */
@@ -170,7 +175,7 @@ export function buildAsk(
   _phaseIdx: number,
   round: number,
   work: string,
-  inputs: Phase['inputs'],
+  inputs: Phase["inputs"],
   filesBlock: string,
   personaSystemPrompt?: string,
   priorRoundFeedback?: string,
@@ -182,49 +187,59 @@ export function buildAsk(
     lines.push(personaBlock);
   }
   lines.push(`# Chorus task — round ${round}, phase ${phase.id}`);
-  lines.push('');
-  lines.push('## Your role');
-  lines.push('doer');
-  lines.push('');
-  lines.push('## What to do');
+  lines.push("");
+  lines.push("## Your role");
+  lines.push("doer");
+  lines.push("");
+  lines.push("## What to do");
   lines.push(phase.title);
   if (phase.description) {
-    lines.push('');
+    lines.push("");
     lines.push(phase.description);
   }
-  lines.push('');
+  lines.push("");
   lines.push("## The user's request");
   lines.push(work);
-  lines.push('');
+  lines.push("");
 
   if (filesBlock) {
     lines.push(filesBlock);
   }
 
   if (inputs.include && inputs.include.length > 0) {
-    lines.push('## Inputs (from prior phases)');
+    lines.push("## Inputs (from prior phases)");
     for (const includePhaseId of inputs.include) {
       lines.push(`- Phase ${includePhaseId}: (link to answer.md)`);
     }
-    lines.push('');
+    lines.push("");
   }
 
   if (inputs.exclude && inputs.exclude.length > 0) {
-    lines.push('## Excluded (do NOT read)');
+    lines.push("## Excluded (do NOT read)");
     for (const excludePhaseId of inputs.exclude) {
       lines.push(`- Phase ${excludePhaseId}: explicitly blocked`);
     }
-    lines.push('');
+    lines.push("");
   }
 
   if (priorRoundFeedback && priorRoundFeedback.trim().length > 0) {
     lines.push(priorRoundFeedback);
   }
 
-  lines.push('## How to respond');
-  lines.push('Write your full answer and end with: ## DONE');
+  lines.push("## How to respond");
+  lines.push("Write your full answer and end with: ## DONE");
 
-  return lines.join('\n');
+  return lines.join("\n");
+}
+
+/** Identity of one reviewer slot in a multi-voice phase. Used by
+ *  `buildReviewerAsk` to stamp an isolation directive into the prompt
+ *  (chorus-issues.md #10). */
+export interface ReviewerSlotIdentity {
+  /** Slot tag — `${lineage}-${idx}`, e.g. `claude-code-4`. */
+  agent: string;
+  /** Total number of reviewer slots in this phase (this slot included). */
+  totalSlots: number;
 }
 
 /** Build the reviewer ask.md prompt for one phase iteration. */
@@ -236,6 +251,7 @@ export function buildReviewerAsk(
   doerOutput: string,
   filesBlock: string,
   personaSystemPrompt?: string,
+  slot?: ReviewerSlotIdentity,
 ): string {
   const lines: string[] = [];
 
@@ -244,27 +260,50 @@ export function buildReviewerAsk(
     lines.push(personaBlock);
   }
   lines.push(`# Chorus review — round ${round}, phase ${phase.id}`);
-  lines.push('');
-  lines.push('## Your role');
-  lines.push('reviewer');
-  lines.push('');
-  lines.push('## What to review');
+  lines.push("");
+  lines.push("## Your role");
+  lines.push("reviewer");
+  lines.push("");
+  // Same-lineage instances (e.g. claude-code-2/4/5) share the chat
+  // directory tree at ~/.chorus/chats/<chatId>/round-<N>/reviewer-*/.
+  // Tool-using CLIs like Claude Code can wander into a sibling's
+  // `answer.md` mid-flight and short-circuit by summarising what the
+  // sibling already wrote — the exact failure mode in chorus-issues.md
+  // #10 (claude-code-4 produced "Two blocking issues identified … plus
+  // six non-blocking items" without doing its own review). Stamp an
+  // explicit isolation directive so the reviewer writes its own
+  // independent take based only on the artifact below.
+  if (slot && slot.totalSlots > 1) {
+    lines.push("## Independence");
+    lines.push(
+      `You are reviewer slot \`${slot.agent}\`. ` +
+        `${slot.totalSlots} reviewers run this phase in parallel — ` +
+        `do NOT read, reference, or summarise any other reviewer's ` +
+        `output. Other reviewers may be writing answer.md files under ` +
+        `~/.chorus/chats/<chatId>/round-${round}/reviewer-*/ while you ` +
+        `work; ignore them. Form your verdict only from the artifact ` +
+        `below. The orchestrator collates all reviews after every slot ` +
+        `finishes.`,
+    );
+    lines.push("");
+  }
+  lines.push("## What to review");
   lines.push(phase.title);
   if (phase.description) {
-    lines.push('');
+    lines.push("");
     lines.push(phase.description);
   }
-  lines.push('');
+  lines.push("");
   lines.push("## The user's request");
   lines.push(work);
-  lines.push('');
+  lines.push("");
 
   if (filesBlock) {
     lines.push(filesBlock);
   }
 
-  lines.push('## Artifact to review');
-  lines.push('```');
+  lines.push("## Artifact to review");
+  lines.push("```");
   // Truncation cap: 256 KB matches MAX_PHASE_OUTPUT_BYTES in lib/db. The
   // prior 2000-char cap silently amputated any diff or draft over ~50
   // lines, which made review-only mode useless and degraded standard
@@ -272,7 +311,7 @@ export function buildReviewerAsk(
   // covers ~5000 lines of typical code; bigger artifacts truncate with a
   // visible marker so reviewers can still flag the gap.
   const ARTIFACT_PROMPT_CAP_BYTES = 256 * 1024;
-  const byteLen = Buffer.byteLength(doerOutput, 'utf-8');
+  const byteLen = Buffer.byteLength(doerOutput, "utf-8");
   if (byteLen <= ARTIFACT_PROMPT_CAP_BYTES) {
     lines.push(doerOutput);
   } else {
@@ -280,18 +319,20 @@ export function buildReviewerAsk(
     // we don't hand the LLM a U+FFFD-laden tail. UTF-8 continuation bytes
     // start with 0b10xxxxxx — walk left while the cut byte is a
     // continuation byte; landing on a start byte (or ASCII) is safe.
-    const buf = Buffer.from(doerOutput, 'utf-8');
+    const buf = Buffer.from(doerOutput, "utf-8");
     let cut = ARTIFACT_PROMPT_CAP_BYTES;
     while (cut > 0 && (buf[cut] & 0b1100_0000) === 0b1000_0000) cut--;
-    lines.push(buf.subarray(0, cut).toString('utf-8'));
-    lines.push(`... (truncated — full artifact was ${byteLen} bytes, cap is ${ARTIFACT_PROMPT_CAP_BYTES} bytes)`);
+    lines.push(buf.subarray(0, cut).toString("utf-8"));
+    lines.push(
+      `... (truncated — full artifact was ${byteLen} bytes, cap is ${ARTIFACT_PROMPT_CAP_BYTES} bytes)`,
+    );
   }
-  lines.push('```');
-  lines.push('');
-  lines.push('## Your verdict');
+  lines.push("```");
+  lines.push("");
+  lines.push("## Your verdict");
   lines.push(
-    'Do you approve? Answer: approve or request changes, end with: ## DONE',
+    "Do you approve? Answer: approve or request changes, end with: ## DONE",
   );
 
-  return lines.join('\n');
+  return lines.join("\n");
 }

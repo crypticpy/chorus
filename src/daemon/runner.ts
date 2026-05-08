@@ -9,23 +9,27 @@
  * helpers live in runner/prompt-builder.ts.
  */
 
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { atomicWriteJsonSync } from '../lib/atomic-write.js';
-import { chats } from '../lib/db/index.js';
-import { logger } from '../lib/logger.js';
-import { isReviewOnlyPhase, type StandardPhase, type Template } from '../lib/template-schema.js';
-import type { ErrorDetector } from './error-detector.js';
-import { runDoer } from './runner/doer-driver.js';
-import { readPriorRoundFeedback } from './runner/prior-round.js';
-import { runReviewers } from './runner/reviewer-driver.js';
-import { runReviewOnlyPhase } from './runner/review-only-phase.js';
-import { detectGitContext, runShipPhase } from './ship.js';
-import type { TmuxManager } from './tmux-types.js';
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { atomicWriteJsonSync } from "../lib/atomic-write.js";
+import { chats } from "../lib/db/index.js";
+import { logger } from "../lib/logger.js";
+import {
+  isReviewOnlyPhase,
+  type StandardPhase,
+  type Template,
+} from "../lib/template-schema.js";
+import type { ErrorDetector } from "./error-detector.js";
+import { runDoer } from "./runner/doer-driver.js";
+import { readPriorRoundFeedback } from "./runner/prior-round.js";
+import { runReviewers } from "./runner/reviewer-driver.js";
+import { runReviewOnlyPhase } from "./runner/review-only-phase.js";
+import { detectGitContext, runShipPhase } from "./ship.js";
+import type { TmuxManager } from "./tmux-types.js";
 
-export type { RunnerEvent } from './runner/types.js';
-import type { RunnerEvent } from './runner/types.js';
+export type { RunnerEvent } from "./runner/types.js";
+import type { RunnerEvent } from "./runner/types.js";
 
 export interface PhaseRunnerOptions {
   chatId: string;
@@ -72,8 +76,19 @@ interface ChatMeta {
  * reviewers, checks consensus, and emits events.
  */
 export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
-  const { chatId, template, work, artifact, repoPath, attachedFiles, onEvent, abortSignal, tmuxMgr, errorDetector } = opts;
-  const chatDir = path.join(os.homedir(), '.chorus', 'chats', chatId);
+  const {
+    chatId,
+    template,
+    work,
+    artifact,
+    repoPath,
+    attachedFiles,
+    onEvent,
+    abortSignal,
+    tmuxMgr,
+    errorDetector,
+  } = opts;
+  const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
 
   // Pack attached files into a single block once per chat. Both doer +
   // every reviewer get the same block — they're auditing the same artifacts.
@@ -99,7 +114,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   } catch (err) {
     logger.warn(
       { chatId, err: err instanceof Error ? err.message : String(err) },
-      'failed to persist template snapshot — cockpit will use live template fallback',
+      "failed to persist template snapshot — cockpit will use live template fallback",
     );
   }
 
@@ -111,7 +126,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     templateId: template.id,
     createdAt: Date.now(),
   };
-  atomicWriteJsonSync(path.join(chatDir, 'meta.json'), meta);
+  atomicWriteJsonSync(path.join(chatDir, "meta.json"), meta);
 
   // chat_done is a one-way latch. The abort listener and the normal
   // terminal emission both try to fire it; whichever runs first wins.
@@ -122,14 +137,14 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   const emitChatDone = (payload: Record<string, unknown>): void => {
     if (chatDoneEmitted) return;
     chatDoneEmitted = true;
-    onEvent({ chatId, type: 'chat_done', payload, ts: Date.now() });
+    onEvent({ chatId, type: "chat_done", payload, ts: Date.now() });
   };
 
   const abortListener = () => {
     // TODO(H): send polite Escape to active session, flip status to cancelled
-    emitChatDone({ status: 'cancelled' });
+    emitChatDone({ status: "cancelled" });
   };
-  abortSignal.addEventListener('abort', abortListener);
+  abortSignal.addEventListener("abort", abortListener);
 
   // Track whether any phase failed because every reviewer in it failed
   // (timeout/quota/crash). If so, the chat ends in 'no_review' rather
@@ -139,6 +154,16 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   // If so, the chat must NOT end approved — there was no real
   // implementation to review.
   let anyPhaseDoerFailed = false;
+  // Distinguishes "doer never produced a real implementation" (real
+  // failure: timeout, crash, partial stream) from "doer ran fine but
+  // reviewers kept saying request_changes through max_rounds." Without
+  // this split, a multi-round chat where the doer always delivered
+  // would be terminally classified as `failed/doer_failed_all_rounds`
+  // — a false negative that hid substantive `request_changes` verdicts
+  // (chorus-issues.md #7). When this is the only failure mode, we
+  // surface `completed/request_changes` with the last round's summary
+  // instead. Captures the most recent round's reviewer summary.
+  let standardPhaseRoundsExhausted: { summary: string } | null = null;
   // Captures the consensus from the most recent review-only phase. Used
   // to override the default 'approved' verdict in chat_done — review-only
   // chats surface what the reviewers actually said rather than auto-
@@ -161,7 +186,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           chatId,
           phase,
           phaseIdx,
-          artifact: artifact ?? '',
+          artifact: artifact ?? "",
           work,
           filesBlock,
           tmuxMgr,
@@ -189,7 +214,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         };
         onEvent({
           chatId,
-          type: 'phase_done',
+          type: "phase_done",
           payload: {
             phaseId: phase.id,
             phaseIdx,
@@ -204,18 +229,23 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       const stdPhase: StandardPhase = phase;
 
       let doerSucceeded = false;
+      // Per-phase tracking — set when the doer completes a round but
+      // reviewers disagree. Cleared when the doer itself fails so we
+      // don't conflate real doer failures with "reviewers said no."
+      let lastReviewerDisagreement: { summary: string } | null = null;
+      let doerCompletedAnyRound = false;
       for (let round = 1; round <= stdPhase.iterate.maxRounds; round++) {
         if (abortSignal.aborted) break;
 
         onEvent({
           chatId,
-          type: 'phase_start',
+          type: "phase_start",
           payload: {
             phaseId: stdPhase.id,
             phaseIdx,
             kind: stdPhase.kind,
             round,
-            role: 'doer',
+            role: "doer",
             agent: stdPhase.doer.lineage,
           },
           ts: Date.now(),
@@ -252,26 +282,31 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         if (!doerAnswer || !doerAnswer.full) {
           onEvent({
             chatId,
-            type: 'phase_failed',
+            type: "phase_failed",
             payload: {
               phaseId: stdPhase.id,
               phaseIdx,
               kind: stdPhase.kind,
-              role: 'doer',
-              reason: doerAnswer ? 'doer_partial_stream' : 'doer_timeout',
+              role: "doer",
+              reason: doerAnswer ? "doer_partial_stream" : "doer_timeout",
             },
             ts: Date.now(),
           });
+          // Real doer failure — clear any prior disagreement state so
+          // we don't surface the previous round's request_changes as
+          // the verdict for a chat that broke mid-stream.
+          lastReviewerDisagreement = null;
           break;
         }
+        doerCompletedAnyRound = true;
 
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: stdPhase.id,
             round,
-            role: 'doer',
+            role: "doer",
             output: doerAnswer.content.slice(0, 500),
           },
           ts: Date.now(),
@@ -292,6 +327,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             onEvent,
             abortSignal,
             template.fallback?.reviewer,
+            repoPath,
           );
 
           if (consensus.allFailed) {
@@ -311,17 +347,30 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             // flag again from their own round-1 outcomes, so cross-phase
             // failure semantics are preserved.
             anyPhaseAllReviewersFailed = false;
+            // Clear stale disagreement from earlier rounds — final
+            // round consensus is what counts.
+            lastReviewerDisagreement = null;
             break;
+          }
+
+          // Reviewers ran cleanly but said request_changes. Capture the
+          // last-round summary so chat_done can surface it as a
+          // legitimate `verdict: request_changes` instead of the
+          // misleading `failed/doer_failed_all_rounds` (chorus-issues #7).
+          // Skipped when the entire reviewer pool crashed — that's a
+          // real failure, not a verdict.
+          if (!consensus.allFailed) {
+            lastReviewerDisagreement = { summary: consensus.summary };
           }
 
           if (round < stdPhase.iterate.maxRounds) {
             onEvent({
               chatId,
-              type: 'phase_progress',
+              type: "phase_progress",
               payload: {
                 phaseId: stdPhase.id,
                 round,
-                role: 'reviewer',
+                role: "reviewer",
                 disagreement: consensus.summary,
               },
               ts: Date.now(),
@@ -336,15 +385,22 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
 
       if (!doerSucceeded) {
         anyPhaseDoerFailed = true;
+        // Promote the last reviewer disagreement (if any) to a chat-
+        // level latch. Only set when the doer actually produced a real
+        // implementation in some round — a doer that never completed
+        // is a real failure, not a `request_changes` verdict.
+        if (doerCompletedAnyRound && lastReviewerDisagreement) {
+          standardPhaseRoundsExhausted = lastReviewerDisagreement;
+        }
         onEvent({
           chatId,
-          type: 'phase_failed',
+          type: "phase_failed",
           payload: {
             phaseId: stdPhase.id,
             phaseIdx,
             kind: stdPhase.kind,
-            role: 'doer',
-            reason: 'max_rounds_exhausted',
+            role: "doer",
+            reason: "max_rounds_exhausted",
           },
           ts: Date.now(),
         });
@@ -357,7 +413,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
 
       onEvent({
         chatId,
-        type: 'phase_done',
+        type: "phase_done",
         payload: {
           phaseId: stdPhase.id,
           phaseIdx,
@@ -373,10 +429,9 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     // status=blocked (chat ran fine, ship couldn't complete) rather
     // than failed (chat broke).
     let shipOutcome:
-      | { kind: 'skipped'; reason?: string }
-      | { kind: 'merged'; prUrl: string }
-      | { kind: 'blocked'; error: string }
-      = { kind: 'skipped' };
+      | { kind: "skipped"; reason?: string }
+      | { kind: "merged"; prUrl: string }
+      | { kind: "blocked"; error: string } = { kind: "skipped" };
 
     // Forcibly skipped when any phase is review_only — there's no doer
     // diff to commit and a template author who set ship.enabled=true on
@@ -394,11 +449,19 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       if (!ctx.ok) {
         // Surface as a skip with reason — chat still ends approved
         // (we didn't ship, but the review was real).
-        shipOutcome = { kind: 'skipped', reason: `${ctx.reason}: ${ctx.detail}` };
+        shipOutcome = {
+          kind: "skipped",
+          reason: `${ctx.reason}: ${ctx.detail}`,
+        };
         onEvent({
           chatId,
-          type: 'phase_progress',
-          payload: { phaseId: 'ship', skipped: true, reason: ctx.reason, detail: ctx.detail },
+          type: "phase_progress",
+          payload: {
+            phaseId: "ship",
+            skipped: true,
+            reason: ctx.reason,
+            detail: ctx.detail,
+          },
           ts: Date.now(),
         });
       } else {
@@ -408,33 +471,45 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         const lastDoerOutput = readLastDoerAnswer(chatDir) ?? work;
         onEvent({
           chatId,
-          type: 'phase_start',
-          payload: { phaseId: 'ship', kind: 'ship' },
+          type: "phase_start",
+          payload: { phaseId: "ship", kind: "ship" },
           ts: Date.now(),
         });
         const result = runShipPhase({
           context: ctx.context,
           chatId,
           templateId: template.id,
-          branchPattern: template.ship.branchPattern ?? 'chorus/{chatId}',
-          titleTemplate: template.ship.titleTemplate ?? 'chorus: {template} via #{chatId}',
+          branchPattern: template.ship.branchPattern ?? "chorus/{chatId}",
+          titleTemplate:
+            template.ship.titleTemplate ?? "chorus: {template} via #{chatId}",
           summary: work,
           doerOutput: lastDoerOutput,
         });
         if (result.ok) {
-          shipOutcome = { kind: 'merged', prUrl: result.prUrl };
+          shipOutcome = { kind: "merged", prUrl: result.prUrl };
           onEvent({
             chatId,
-            type: 'phase_done',
-            payload: { phaseId: 'ship', prUrl: result.prUrl, branch: result.branch },
+            type: "phase_done",
+            payload: {
+              phaseId: "ship",
+              prUrl: result.prUrl,
+              branch: result.branch,
+            },
             ts: Date.now(),
           });
         } else {
-          shipOutcome = { kind: 'blocked', error: `${result.stage}: ${result.detail}` };
+          shipOutcome = {
+            kind: "blocked",
+            error: `${result.stage}: ${result.detail}`,
+          };
           onEvent({
             chatId,
-            type: 'phase_failed',
-            payload: { phaseId: 'ship', stage: result.stage, detail: result.detail },
+            type: "phase_failed",
+            payload: {
+              phaseId: "ship",
+              stage: result.stage,
+              detail: result.detail,
+            },
             ts: Date.now(),
           });
         }
@@ -444,21 +519,40 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     // Final chat_done — encodes terminal status and ship-phase outcome.
     // Routed through emitChatDone so an earlier abort (SSE close, user
     // cancel) can't be overwritten by a later "completed" emission.
-    if (anyPhaseDoerFailed) {
+    if (anyPhaseDoerFailed && standardPhaseRoundsExhausted) {
+      // Doer ran fine each round; reviewers exhausted maxRounds while
+      // saying request_changes. Surface the actual verdict — see
+      // chorus-issues.md #7. Without this branch the substantive
+      // findings are masked as `failed/doer_failed_all_rounds`.
+      emitChatDone({
+        status: "completed",
+        verdict: "request_changes",
+        reviewerSummary: standardPhaseRoundsExhausted.summary,
+        reason: "max_rounds_exhausted",
+      });
+    } else if (anyPhaseDoerFailed) {
       // The doer never produced a real implementation. Don't pretend
       // the chat was reviewed — surface as failed so the cockpit shows
       // it red.
-      emitChatDone({ status: 'failed', verdict: 'failed', error: 'doer_failed_all_rounds' });
-    } else if (anyPhaseAllReviewersFailed) {
-      emitChatDone({ status: 'no_review', verdict: 'no_review' });
-    } else if (shipOutcome.kind === 'merged') {
       emitChatDone({
-        status: 'merged',
-        verdict: 'approved',
+        status: "failed",
+        verdict: "failed",
+        error: "doer_failed_all_rounds",
+      });
+    } else if (anyPhaseAllReviewersFailed) {
+      emitChatDone({ status: "no_review", verdict: "no_review" });
+    } else if (shipOutcome.kind === "merged") {
+      emitChatDone({
+        status: "merged",
+        verdict: "approved",
         prUrl: shipOutcome.prUrl,
       });
-    } else if (shipOutcome.kind === 'blocked') {
-      emitChatDone({ status: 'blocked', verdict: 'approved', shipError: shipOutcome.error });
+    } else if (shipOutcome.kind === "blocked") {
+      emitChatDone({
+        status: "blocked",
+        verdict: "approved",
+        shipError: shipOutcome.error,
+      });
     } else if (reviewOnlyConsensus !== null) {
       // Review-only chats surface the actual reviewer consensus rather
       // than auto-approving. The chat itself completed (artifact
@@ -466,25 +560,25 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       // reflects what reviewers said so the cockpit/CLI can render a
       // meaningful "agreed / requested changes" state.
       emitChatDone({
-        status: 'completed',
-        verdict: reviewOnlyConsensus.agreed ? 'approved' : 'request_changes',
+        status: "completed",
+        verdict: reviewOnlyConsensus.agreed ? "approved" : "request_changes",
         reviewerSummary: reviewOnlyConsensus.summary,
       });
     } else {
       // Either no ship phase or ship was skipped — chat ends approved.
       emitChatDone({
-        status: 'completed',
-        verdict: 'approved',
-        ...(shipOutcome.kind === 'skipped' && shipOutcome.reason
+        status: "completed",
+        verdict: "approved",
+        ...(shipOutcome.kind === "skipped" && shipOutcome.reason
           ? { shipSkipped: shipOutcome.reason }
           : {}),
       });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    emitChatDone({ status: 'failed', error: message });
+    emitChatDone({ status: "failed", error: message });
   } finally {
-    abortSignal.removeEventListener('abort', abortListener);
+    abortSignal.removeEventListener("abort", abortListener);
   }
 }
 
@@ -501,18 +595,18 @@ function readLastDoerAnswer(chatDir: string): string | undefined {
   const rounds = fs
     .readdirSync(chatDir)
     .filter((n) => /^round-\d+$/.test(n))
-    .map((n) => ({ name: n, num: parseInt(n.replace('round-', ''), 10) }))
+    .map((n) => ({ name: n, num: parseInt(n.replace("round-", ""), 10) }))
     .sort((a, b) => b.num - a.num);
 
   for (const r of rounds) {
     const roundDir = path.join(chatDir, r.name);
     const doerSubdir = fs
       .readdirSync(roundDir)
-      .find((n) => n.startsWith('doer-'));
+      .find((n) => n.startsWith("doer-"));
     if (!doerSubdir) continue;
-    const answerFile = path.join(roundDir, doerSubdir, 'answer.md');
+    const answerFile = path.join(roundDir, doerSubdir, "answer.md");
     if (fs.existsSync(answerFile)) {
-      const content = fs.readFileSync(answerFile, 'utf-8');
+      const content = fs.readFileSync(answerFile, "utf-8");
       if (content.trim().length > 0) return content;
     }
   }
@@ -521,10 +615,22 @@ function readLastDoerAnswer(chatDir: string): string | undefined {
 
 // Re-exports keep external import sites stable. Tests import some of
 // these from `'../src/daemon/runner'`, the MCP layer imports verdict.
-import { buildAsk, buildReviewerAsk, packAttachedFiles } from './runner/prompt-builder.js';
-import { runDoerHeadless } from './runner/doer.js';
-import { runReviewerHeadless } from './runner/reviewer.js';
-import { StreamFileWriter } from './runner/stream-file-writer.js';
-import { verdictFromReviewerText } from './runner/verdict.js';
+import {
+  buildAsk,
+  buildReviewerAsk,
+  packAttachedFiles,
+} from "./runner/prompt-builder.js";
+import { runDoerHeadless } from "./runner/doer.js";
+import { runReviewerHeadless } from "./runner/reviewer.js";
+import { StreamFileWriter } from "./runner/stream-file-writer.js";
+import { verdictFromReviewerText } from "./runner/verdict.js";
 
-export { buildAsk, buildReviewerAsk, packAttachedFiles, runDoerHeadless, runReviewerHeadless, StreamFileWriter, verdictFromReviewerText };
+export {
+  buildAsk,
+  buildReviewerAsk,
+  packAttachedFiles,
+  runDoerHeadless,
+  runReviewerHeadless,
+  StreamFileWriter,
+  verdictFromReviewerText,
+};

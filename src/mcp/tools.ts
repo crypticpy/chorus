@@ -3,6 +3,9 @@
  * Each tool has a Zod input schema and calls daemonFetch.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { z } from "zod";
 import yaml from "yaml";
 import {
@@ -10,6 +13,87 @@ import {
   readDaemonInfo,
 } from "../lib/daemon-discovery.js";
 import { daemonFetch, streamChat } from "./client";
+
+/** Per-file cap on reviewer output bundled into MCP responses. 16 KiB
+ *  matches the figure called out in chorus-issues.md #5 — large enough
+ *  to carry a full request_changes review with code blocks, small
+ *  enough that a 5-reviewer chat doesn't blow the MCP response budget. */
+const REVIEWER_OUTPUT_CAP_BYTES = 16 * 1024;
+
+interface ReviewerArtifact {
+  round: number;
+  agent: string;
+  content: string;
+  truncated: boolean;
+}
+
+/**
+ * Walk `~/.chorus/chats/<chatId>/round-N/reviewer-*` dirs and return each
+ * reviewer's answer.md content (capped). Used by wait_for_chat /
+ * get_chat_status to surface reviewer findings to MCP clients without
+ * forcing them to re-read chorus's local chat directory by hand — see
+ * chorus-issues.md #5.
+ *
+ * Best-effort: any FS error is swallowed and the caller continues without
+ * the artifact (status fields are still useful even if outputs are gone).
+ * The list is sorted by (round desc, agent asc) so the most recent round
+ * is first — matches what a user actually reads in the cockpit.
+ */
+function readReviewerArtifacts(chatId: string): ReviewerArtifact[] {
+  const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
+  if (!fs.existsSync(chatDir)) return [];
+
+  const out: ReviewerArtifact[] = [];
+  let rounds: string[];
+  try {
+    rounds = fs.readdirSync(chatDir).filter((n) => /^round-\d+$/.test(n));
+  } catch {
+    return [];
+  }
+
+  for (const roundName of rounds) {
+    const round = parseInt(roundName.replace("round-", ""), 10);
+    const roundDir = path.join(chatDir, roundName);
+    let entries: string[];
+    try {
+      entries = fs
+        .readdirSync(roundDir)
+        .filter((n) => n.startsWith("reviewer-"));
+    } catch {
+      continue;
+    }
+    for (const reviewerName of entries) {
+      const answerFile = path.join(roundDir, reviewerName, "answer.md");
+      try {
+        const stat = fs.statSync(answerFile);
+        if (!stat.isFile() || stat.size === 0) continue;
+        const truncated = stat.size > REVIEWER_OUTPUT_CAP_BYTES;
+        const buf = Buffer.alloc(
+          Math.min(stat.size, REVIEWER_OUTPUT_CAP_BYTES),
+        );
+        const fd = fs.openSync(answerFile, "r");
+        try {
+          fs.readSync(fd, buf, 0, buf.length, 0);
+        } finally {
+          fs.closeSync(fd);
+        }
+        out.push({
+          round,
+          agent: reviewerName.replace(/^reviewer-/, ""),
+          content: buf.toString("utf-8"),
+          truncated,
+        });
+      } catch {
+        // missing/unreadable — skip this reviewer
+      }
+    }
+  }
+
+  out.sort((a, b) =>
+    a.round !== b.round ? b.round - a.round : a.agent.localeCompare(b.agent),
+  );
+  return out;
+}
 
 /**
  * Resolve the cockpit URL the run links should point at. Sync read from
@@ -108,35 +192,70 @@ function parseTemplateRow(row: RawTemplateRow): {
  * `<resource>Id` pattern used elsewhere (`chatId`, `personaId`).
  * The legacy `template` alias is accepted so existing scripts keep
  * working through v0.7; will be dropped in v0.8.
+ *
+ * Per-field `.describe()` calls are loadbearing — the MCP SDK turns
+ * them into the `description` strings on the published JSONSchema, so
+ * MCP clients can introspect what each field means rather than
+ * guessing (chorus-issues.md #8).
+ *
+ * IMPORTANT: kept as a plain `z.object()` (no `.transform()`). MCP
+ * clients introspect the schema to discover required fields; wrapping
+ * it in `ZodEffects` strips the `properties` map and the tool reports
+ * an empty schema. The legacy `template` → `templateId` alias is
+ * resolved inside `createChat()` instead.
  */
-export const CreateChatSchema = z
-  .object({
-    work: z.string().min(1, "work prompt is required"),
-    templateId: z.string().optional(),
-    template: z.string().optional(),
-    files: z.array(z.string()).optional(),
-    /**
-     * Artifact text for review-only templates (e.g. `templateId: "review-only"`).
-     * Required when the chosen template's first phase has `kind: review_only`.
-     * Ignored for full-pipeline templates. Capped by the template's
-     * artifact.maxBytes (default 1 MiB).
-     */
-    artifact: z.string().optional(),
-  })
-  .transform((input) => ({
-    ...input,
-    // `??` only falls through on null/undefined; an empty string would
-    // pass through and the daemon would reject it. Treat empty as
-    // missing so the legacy alias / default fires.
-    templateId:
-      (input.templateId && input.templateId.length > 0
-        ? input.templateId
-        : undefined) ??
-      (input.template && input.template.length > 0
-        ? input.template
-        : undefined) ??
-      "code-review",
-  }));
+export const CreateChatSchema = z.object({
+  work: z
+    .string()
+    .min(1, "work prompt is required")
+    .describe(
+      "The brief / question / instruction the chat should act on. " +
+        "For review-only templates this is the framing prompt; the " +
+        "artifact under review goes in `artifact`. Required.",
+    ),
+  templateId: z
+    .string()
+    .optional()
+    .describe(
+      "Template id from `list_templates` (e.g. `code-review`, " +
+        "`review-only`, `tri-review`). Defaults to `code-review` when " +
+        "omitted.",
+    ),
+  template: z
+    .string()
+    .optional()
+    .describe(
+      "Legacy alias for `templateId`. Accepted through v0.7; will be " +
+        "dropped in v0.8 — prefer `templateId`.",
+    ),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Absolute or repo-relative paths to attach to the doer/reviewer " +
+        "prompt. Each file is inlined (capped per file by chorus's " +
+        "attached-file limit).",
+    ),
+  artifact: z
+    .string()
+    .optional()
+    .describe(
+      "Artifact text for review-only templates (e.g. `templateId: " +
+        '"review-only"`). Required when the chosen template\'s first ' +
+        "phase has `kind: review_only`. Ignored for full-pipeline " +
+        "templates. Capped by the template's artifact.maxBytes " +
+        "(default 1 MiB).",
+    ),
+  repoPath: z
+    .string()
+    .optional()
+    .describe(
+      "Absolute path to the repo the chat targets. When set, " +
+        "reviewers run inside the repo (so `gh`, file reads, and " +
+        "sandboxed CLIs like Gemini can see the code) and the ship " +
+        "phase can commit/push. Optional.",
+    ),
+});
 
 export const WaitForChatSchema = z.object({
   chatId: z.string().min(1, "chatId is required"),
@@ -162,29 +281,63 @@ export const ListTemplatesSchema = z.object({});
 
 export const ListPersonasSchema = z.object({});
 
-export const InvokePersonaSchema = z
-  .object({
-    personaId: z.string().min(1, "personaId is required"),
-    brief: z.string().min(1, "brief is required"),
-    files: z.array(z.string()).optional(),
-    templateId: z.string().optional(),
-    template: z.string().optional(),
-    repoPath: z.string().optional(),
-  })
-  .transform((input) => ({
-    ...input,
-    // `??` only falls through on null/undefined; an empty string would
-    // pass through and the daemon would reject it. Treat empty as
-    // missing so the legacy alias / default fires.
-    templateId:
-      (input.templateId && input.templateId.length > 0
-        ? input.templateId
-        : undefined) ??
-      (input.template && input.template.length > 0
-        ? input.template
-        : undefined) ??
-      "code-review",
-  }));
+/**
+ * Schema for `invoke_persona`.
+ *
+ * Same `ZodEffects`-strips-properties hazard as `CreateChatSchema` — kept
+ * as a plain `z.object()` so MCP introspection sees the real fields. The
+ * legacy `template` alias and the `code-review` default are applied in
+ * `invokePersona()` via `resolveTemplateId()` (chorus-issues.md #8).
+ */
+export const InvokePersonaSchema = z.object({
+  personaId: z
+    .string()
+    .min(1, "personaId is required")
+    .describe(
+      "Persona id from `list_personas` (e.g. `kim-general`, " +
+        "`security-reviewer`). The persona's `system_prompt` is " +
+        "prepended to `brief`. Required.",
+    ),
+  brief: z
+    .string()
+    .min(1, "brief is required")
+    .describe(
+      "The user request that the persona should act on. Combined with " +
+        "the persona's system prompt before being handed to the doer. " +
+        "Required.",
+    ),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Absolute or repo-relative paths to attach to the prompt. Each " +
+        "file is inlined (capped per file by chorus's attached-file " +
+        "limit).",
+    ),
+  templateId: z
+    .string()
+    .optional()
+    .describe(
+      "Template id from `list_templates`. Controls which lineage runs " +
+        "the persona (e.g. `code-review`, `tri-review`). Defaults to " +
+        "`code-review` when omitted.",
+    ),
+  template: z
+    .string()
+    .optional()
+    .describe(
+      "Legacy alias for `templateId`. Accepted through v0.7; will be " +
+        "dropped in v0.8 — prefer `templateId`.",
+    ),
+  repoPath: z
+    .string()
+    .optional()
+    .describe(
+      "Absolute path to the repo the persona should run against. When " +
+        "set, reviewers and the doer run inside the repo so they can " +
+        "see the code. Optional.",
+    ),
+});
 
 // ─── Output schemas ─────────────────────────────────────────────────────
 
@@ -194,12 +347,22 @@ const ChatRefSchema = z.object({
   url: z.string(),
 });
 
+const ReviewerArtifactSchema = z.object({
+  round: z.number(),
+  agent: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
+});
+
 const ChatStatusSchema = z.object({
   chatId: z.string(),
   status: z.string(),
   phase: z.number().optional(),
   progress: z.number().optional(),
   blocked: z.boolean().optional(),
+  /** Each finished reviewer's answer.md content (capped, most-recent
+   *  round first). Empty when nothing has been written yet. */
+  reviews: z.array(ReviewerArtifactSchema).optional(),
 });
 
 const ChatResultSchema = z.object({
@@ -207,6 +370,10 @@ const ChatResultSchema = z.object({
   verdict: z.string().optional(),
   summary: z.string().optional(),
   blocked: z.boolean().optional(),
+  /** Each finished reviewer's answer.md content (capped, most-recent
+   *  round first). Lets MCP clients surface "request changes" verdicts
+   *  with their findings instead of having to read ~/.chorus by hand. */
+  reviews: z.array(ReviewerArtifactSchema).optional(),
 });
 
 const BlockedChatSchema = z.object({
@@ -252,20 +419,40 @@ function personaRowToRef(row: DaemonPersonaRow) {
 
 // ─── Tools ──────────────────────────────────────────────────────────────
 
+/** Resolve the legacy `template` alias and apply the `code-review`
+ *  default. Empty strings count as missing — the daemon rejects them
+ *  outright, so we treat them the same as omitted. Previously lived in
+ *  a Zod `.transform()` but moved out so the MCP schema introspection
+ *  exposes the real `properties` map (chorus-issues.md #8). */
+function resolveTemplateId(input: {
+  templateId?: string;
+  template?: string;
+}): string {
+  const fromCanonical =
+    input.templateId && input.templateId.length > 0
+      ? input.templateId
+      : undefined;
+  const fromAlias =
+    input.template && input.template.length > 0 ? input.template : undefined;
+  return fromCanonical ?? fromAlias ?? "code-review";
+}
+
 /**
  * Create a new chat.
  * Returns immediately with chatId and status.
  */
 export async function createChat(input: unknown) {
   const parsed = CreateChatSchema.parse(input);
+  const templateId = resolveTemplateId(parsed);
 
   const result = await daemonFetch<DaemonChatRow>("/chats", {
     method: "POST",
     body: JSON.stringify({
       work: parsed.work,
-      templateId: parsed.templateId,
+      templateId,
       files: parsed.files,
       ...(parsed.artifact !== undefined ? { artifact: parsed.artifact } : {}),
+      ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
     }),
   });
 
@@ -279,7 +466,7 @@ export async function createChat(input: unknown) {
  */
 export async function waitForChat(
   input: unknown,
-  onProgress: (event: Record<string, unknown>) => void
+  onProgress: (event: Record<string, unknown>) => void,
 ) {
   const parsed = WaitForChatSchema.parse(input);
 
@@ -296,14 +483,26 @@ export async function waitForChat(
         status === "cancelled" ||
         status === "failed"
       ) {
-        return ChatResultSchema.parse(event);
+        const reviews = readReviewerArtifacts(parsed.chatId);
+        const merged = {
+          ...(event as Record<string, unknown>),
+          ...(reviews.length > 0 ? { reviews } : {}),
+        };
+        return ChatResultSchema.parse(merged);
       }
     }
   }
 
   // If stream closed without reaching terminal, fetch final status
-  const result = await daemonFetch<unknown>(`/chats/${parsed.chatId}`);
-  return ChatResultSchema.parse(result);
+  const result = (await daemonFetch<unknown>(
+    `/chats/${parsed.chatId}`,
+  )) as Record<string, unknown> | null;
+  const reviews = readReviewerArtifacts(parsed.chatId);
+  const merged = {
+    ...(result ?? {}),
+    ...(reviews.length > 0 ? { reviews } : {}),
+  };
+  return ChatResultSchema.parse(merged);
 }
 
 /**
@@ -313,7 +512,12 @@ export async function getChatStatus(input: unknown) {
   const parsed = GetChatStatusSchema.parse(input);
 
   const result = await daemonFetch<DaemonChatRow>(`/chats/${parsed.chatId}`);
-  return ChatStatusSchema.parse(chatRowToStatus(result));
+  const reviews = readReviewerArtifacts(parsed.chatId);
+  const status = chatRowToStatus(result);
+  return ChatStatusSchema.parse({
+    ...status,
+    ...(reviews.length > 0 ? { reviews } : {}),
+  });
 }
 
 /**
@@ -342,7 +546,7 @@ export async function listBlocked(input: unknown) {
       work: row.work,
       blockedReason: row.ship_error ?? "Awaiting user input",
       since: row.updated_at,
-    }))
+    })),
   );
 
   return { chats };
@@ -359,7 +563,7 @@ export async function resumeChat(input: unknown) {
     {
       method: "POST",
       body: JSON.stringify({ answer: parsed.answer }),
-    }
+    },
   );
 
   return { ok: true, status: ChatStatusSchema.parse(chatRowToStatus(result)) };
@@ -432,6 +636,7 @@ export async function listPersonas(input: unknown) {
  */
 export async function invokePersona(input: unknown) {
   const parsed = InvokePersonaSchema.parse(input);
+  const templateId = resolveTemplateId(parsed);
 
   // Pull full persona so we have the system_prompt.
   const persona = await daemonFetch<DaemonPersonaRow>(
@@ -450,9 +655,9 @@ export async function invokePersona(input: unknown) {
     method: "POST",
     body: JSON.stringify({
       work: composedBrief,
-      templateId: parsed.templateId,
+      templateId,
       files: parsed.files,
-      repoPath: parsed.repoPath,
+      ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
     }),
   });
 

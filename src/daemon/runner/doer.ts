@@ -15,21 +15,21 @@
  *   - error event flips errored AND preserves accumulated content
  *   - StreamFileWriter buffer is flushed in the finally block on every path
  */
-import * as fs from 'fs';
-import * as path from 'path';
-import type { StandardPhase } from '../../lib/template-schema.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from '../../lib/template-schema.js';
-import type { AgentShim } from '../agents/types.js';
-import { getPermissions } from '../../lib/settings/permissions.js';
+import * as fs from "fs";
+import * as path from "path";
+import type { StandardPhase } from "../../lib/template-schema.js";
+import { DEFAULT_PHASE_TIMEOUT_MS } from "../../lib/template-schema.js";
+import type { AgentShim } from "../agents/types.js";
+import { getPermissions } from "../../lib/settings/permissions.js";
 import {
   classifyOpenRouterError,
   getHealth,
   recordHealth,
   type CliLineage,
-} from '../../lib/cli-health.js';
-import { synthesizeCostUsd } from '../../lib/model-pricing.js';
-import { StreamFileWriter } from './stream-file-writer.js';
-import type { RunnerEvent } from './types.js';
+} from "../../lib/cli-health.js";
+import { synthesizeCostUsd } from "../../lib/model-pricing.js";
+import { StreamFileWriter } from "./stream-file-writer.js";
+import type { RunnerEvent } from "./types.js";
 
 export async function runDoerHeadless(args: {
   shim: AgentShim;
@@ -83,7 +83,7 @@ export async function runDoerHeadless(args: {
   }
 
   const perms = await getPermissions();
-  let accumulated = '';
+  let accumulated = "";
   let finalText: string | undefined;
   let errored = false;
   // Captured from the first error event so we can write it to
@@ -91,16 +91,18 @@ export async function runDoerHeadless(args: {
   // Mirrors the reviewer-side handling so chat dirs are self-
   // explanatory after a silent-failure crash.
   let errorSummary: { kind: string; message: string } | undefined;
-  let capturedUsage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-    costUsd?: number;
-  } | undefined;
+  let capturedUsage:
+    | {
+        inputTokens?: number;
+        outputTokens?: number;
+        cachedInputTokens?: number;
+        costUsd?: number;
+      }
+    | undefined;
   const startedAt = Date.now();
 
   // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
-  fs.writeFileSync(answerFile, '');
+  fs.writeFileSync(answerFile, "");
   const writer = new StreamFileWriter(answerFile);
 
   const stream = shim.runHeadless({
@@ -116,59 +118,64 @@ export async function runDoerHeadless(args: {
 
   try {
     for await (const event of stream) {
-      if (event.type === 'text_delta') {
+      if (event.type === "text_delta") {
         accumulated += event.text;
         writer.write(event.text);
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'doer',
+            role: "doer",
             agent: agentName,
-            output: accumulated.slice(-500),
+            // 8 KiB tail — large enough to carry the doer's closing
+            // summary (the prior 500-byte cap clipped mid-word and gave
+            // MCP clients no way to recover the rest). Full text is on
+            // disk at answerFile and referenced via outputPath in the
+            // terminal participant_done event below.
+            output: accumulated.slice(-8 * 1024),
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'tool_call_start') {
+      } else if (event.type === "tool_call_start") {
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'doer',
+            role: "doer",
             agent: agentName,
             tool: event.tool,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'progress') {
+      } else if (event.type === "progress") {
         onEvent({
           chatId,
-          type: 'phase_progress',
+          type: "phase_progress",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'doer',
+            role: "doer",
             agent: agentName,
             elapsedMs: event.elapsedMs,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'message_done') {
+      } else if (event.type === "message_done") {
         finalText = event.finalText;
         if (event.usage) capturedUsage = event.usage;
         writer.flushNow();
         if (event.finalText.trim().length === 0) {
           const existing = fs.existsSync(answerFile)
-            ? fs.readFileSync(answerFile, 'utf-8')
-            : '';
+            ? fs.readFileSync(answerFile, "utf-8")
+            : "";
           if (!/\n##\s*DONE\s*\n?$/i.test(existing.trimEnd())) {
             fs.appendFileSync(
               answerFile,
-              existing.endsWith('\n') ? '\n## DONE\n' : '\n\n## DONE\n',
+              existing.endsWith("\n") ? "\n## DONE\n" : "\n\n## DONE\n",
             );
           }
         } else {
@@ -177,7 +184,7 @@ export async function runDoerHeadless(args: {
           );
           const finalContent = needsSentinel
             ? `${event.finalText}\n\n## DONE\n`
-            : event.finalText.endsWith('\n')
+            : event.finalText.endsWith("\n")
               ? event.finalText
               : `${event.finalText}\n`;
           fs.writeFileSync(answerFile, finalContent);
@@ -212,14 +219,14 @@ export async function runDoerHeadless(args: {
           }
         }
         try {
-          const statsPath = path.join(path.dirname(answerFile), '_stats.json');
+          const statsPath = path.join(path.dirname(answerFile), "_stats.json");
           fs.writeFileSync(
             statsPath,
             JSON.stringify({
               durationMs: Date.now() - startedAt,
               ...(usageForStats ? { usage: usageForStats } : {}),
             }),
-            'utf-8',
+            "utf-8",
           );
         } catch {
           /* sidecar is informational; ignore write errors */
@@ -232,16 +239,21 @@ export async function runDoerHeadless(args: {
         // consumed on the cockpit side.
         onEvent({
           chatId,
-          type: 'participant_done',
+          type: "participant_done",
           payload: {
             phaseId: phase.id,
             round,
-            role: 'doer',
+            role: "doer",
             agent: agentName,
+            // Pointer to the on-disk full output. MCP clients can read
+            // this when the streamed `output` slice was truncated (the
+            // 8 KiB tail in phase_progress is for live UI; this is the
+            // canonical source). Path is absolute.
+            outputPath: answerFile,
           },
           ts: Date.now(),
         });
-      } else if (event.type === 'error') {
+      } else if (event.type === "error") {
         errored = true;
         // Mirror reviewer.ts: persist OpenRouter HTTP-error state into
         // cli-health so the home-page card flips to quota/auth/rate-limit
@@ -249,11 +261,14 @@ export async function runDoerHeadless(args: {
         const classified = classifyOpenRouterError(event.kind, event.message);
         if (classified) {
           recordHealth({
-            lineage: 'openrouter',
+            lineage: "openrouter",
             status: classified.status,
             message: classified.message,
           }).catch((healthErr: unknown) => {
-            console.error('[chorus] recordHealth failed for openrouter:', healthErr);
+            console.error(
+              "[chorus] recordHealth failed for openrouter:",
+              healthErr,
+            );
           });
         }
         if (!errorSummary) {
@@ -264,13 +279,13 @@ export async function runDoerHeadless(args: {
         }
         onEvent({
           chatId,
-          type: 'cli_error',
+          type: "cli_error",
           payload: {
             phaseId: phase.id,
             phaseKind: phase.kind,
             phaseIdx: 0,
             round,
-            role: 'doer',
+            role: "doer",
             agent: agentName,
             error: {
               kind: event.kind,
@@ -287,20 +302,20 @@ export async function runDoerHeadless(args: {
     errored = true;
     const message = err instanceof Error ? err.message : String(err);
     if (!errorSummary) {
-      errorSummary = { kind: 'stream_failure', message };
+      errorSummary = { kind: "stream_failure", message };
     }
     onEvent({
       chatId,
-      type: 'cli_error',
+      type: "cli_error",
       payload: {
         phaseId: phase.id,
         phaseKind: phase.kind,
         phaseIdx: 0,
         round,
-        role: 'doer',
+        role: "doer",
         agent: agentName,
         error: {
-          kind: 'stream_failure',
+          kind: "stream_failure",
           message,
           lineage: phase.doer.lineage,
         },
@@ -312,14 +327,19 @@ export async function runDoerHeadless(args: {
     // When the subprocess died without producing any content, write the
     // error summary to answer.md so the chat dir is self-explanatory.
     // Same pattern as runReviewerHeadless — see comment there.
-    if (errored && accumulated.length === 0 && (!finalText || finalText.length === 0) && errorSummary) {
+    if (
+      errored &&
+      accumulated.length === 0 &&
+      (!finalText || finalText.length === 0) &&
+      errorSummary
+    ) {
       try {
         // Mirror reviewer.ts: include cli-health resetAt for quota /
         // rate-limit failures so the cockpit can render a countdown.
         let resetAt: number | undefined;
         try {
           const h = await getHealth(phase.doer.lineage as CliLineage);
-          if (typeof h.resetAt === 'number' && h.resetAt > Date.now()) {
+          if (typeof h.resetAt === "number" && h.resetAt > Date.now()) {
             resetAt = h.resetAt;
           }
         } catch {
@@ -330,8 +350,10 @@ export async function runDoerHeadless(args: {
           `## DOER FAILED\n\n` +
             `**Kind:** ${errorSummary.kind}\n` +
             `**Lineage:** ${phase.doer.lineage}\n` +
-            `**Model:** ${modelOverride ?? phase.doer.models?.[0] ?? '(default)'}\n` +
-            (resetAt ? `**Resets:** ${new Date(resetAt).toISOString()}\n` : '') +
+            `**Model:** ${modelOverride ?? phase.doer.models?.[0] ?? "(default)"}\n` +
+            (resetAt
+              ? `**Resets:** ${new Date(resetAt).toISOString()}\n`
+              : "") +
             `\n${errorSummary.message}\n`,
         );
       } catch {
@@ -346,15 +368,15 @@ export async function runDoerHeadless(args: {
       const err = writer.lastError();
       onEvent({
         chatId,
-        type: 'cli_warning',
+        type: "cli_warning",
         payload: {
           phaseId: phase.id,
           round,
-          role: 'doer',
+          role: "doer",
           agent: agentName,
-          reason: 'stream_writer_dead',
-          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : 'unknown'}`,
-          cta: 'Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.',
+          reason: "stream_writer_dead",
+          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : "unknown"}`,
+          cta: "Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.",
         },
         ts: Date.now(),
       });
@@ -381,7 +403,8 @@ export async function runDoerHeadless(args: {
   // error mid-stream. The launch-eve gemini review of runner orchestration
   // flagged this — earlier code returned full=true whenever
   // `accumulated.length > 0`, regardless of `errored` state.
-  const isFull = !errored && (finalText !== undefined || accumulated.length > 0);
+  const isFull =
+    !errored && (finalText !== undefined || accumulated.length > 0);
 
   return {
     content,
