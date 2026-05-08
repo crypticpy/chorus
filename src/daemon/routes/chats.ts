@@ -661,23 +661,192 @@ export function registerChatRoutes(
     }
   });
 
-  // Resume — answer a blocking question.
+  // Resume — finalise the user's audit checklist selection and re-fire
+  // the runner onto the orchestrate phase.
+  //
+  // Body: { answer: string } where `answer` is JSON-encoded `string[]`
+  // (the ids of audit items the user approved). This shape matches what
+  // the cockpit's RunChecklist component POSTs.
+  //
+  // Side effects, in order:
+  //   1. Cross-check the ids against `<chatDir>/audit-output.json`.
+  //   2. Persist `<chatDir>/audit-selected-ids.json`.
+  //   3. Update chats row: status='drafting', current_phase_idx=<orchestrate-idx>.
+  //   4. Re-fire the runner via runWithMultiplex (fire-and-forget).
   fastify.post<{
     Params: { id: string };
     Body: { answer: string };
     Reply: ApiResponse<object>;
   }>("/chats/:id/resume", async (request, reply) => {
     try {
-      const chatId = request.params.id;
-      if (!isValidChatId(chatId)) {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
         return sendError(reply, "validation", "invalid chat id");
       }
+      const existing = await chats.getBySlugOrId(param);
+      if (!existing) {
+        return sendError(reply, "not_found", `Chat ${param} not found`);
+      }
+      const chatId = existing.id;
+
+      if (existing.status !== "blocked") {
+        return sendError(
+          reply,
+          "validation",
+          `Chat ${param} is not blocked (status=${existing.status})`,
+        );
+      }
+
       const { answer } = request.body;
-      if (!answer) {
+      if (typeof answer !== "string" || answer.length === 0) {
         return sendError(reply, "validation", "answer is required");
       }
-      const chat = await chats.update(chatId, { status: "reviewing" });
-      return successResponse(chat);
+
+      // Parse `answer` as JSON; must be a string[].
+      let selectedIds: string[];
+      try {
+        const parsed = JSON.parse(answer);
+        if (
+          !Array.isArray(parsed) ||
+          !parsed.every((s) => typeof s === "string")
+        ) {
+          return sendError(
+            reply,
+            "validation",
+            "answer must be a JSON-encoded array of strings",
+          );
+        }
+        selectedIds = parsed as string[];
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `answer is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Cross-check against audit-output.json. Every id the user
+      // submitted must exist in the audit phase's items list — a
+      // mismatch likely means the cockpit is stale or a malicious
+      // client is fishing.
+      const osModule = await import("os");
+      const chatDir = path.join(osModule.homedir(), ".chorus", "chats", chatId);
+      const auditPath = path.join(chatDir, "audit-output.json");
+      let validIds: Set<string>;
+      try {
+        const raw = JSON.parse(fs.readFileSync(auditPath, "utf-8")) as {
+          items?: Array<{ id?: unknown }>;
+        };
+        if (!Array.isArray(raw.items)) {
+          return sendError(
+            reply,
+            "validation",
+            "audit-output.json is missing items[]",
+          );
+        }
+        validIds = new Set(
+          raw.items
+            .map((it) => it?.id)
+            .filter((id): id is string => typeof id === "string"),
+        );
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `cannot read audit-output.json: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      const unknownIds = selectedIds.filter((id) => !validIds.has(id));
+      if (unknownIds.length > 0) {
+        return sendError(
+          reply,
+          "validation",
+          `unknown audit item ids: ${unknownIds.join(", ")}`,
+        );
+      }
+
+      // Persist the user's selection. atomicWriteJsonSync so a crash
+      // mid-write can't leave a partial file the orchestrate phase
+      // chokes on.
+      const { atomicWriteJsonSync } = await import("../../lib/atomic-write.js");
+      try {
+        atomicWriteJsonSync(path.join(chatDir, "audit-selected-ids.json"), {
+          ids: selectedIds,
+          submittedAt: Date.now(),
+        });
+      } catch (err) {
+        return sendError(
+          reply,
+          "db_error",
+          `failed to persist selection: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Find the orchestrate phase index. Prefer the frozen
+      // template_snapshot (what the chat actually ran against) over the
+      // live template (which may have been edited since the chat fired).
+      let orchestrateIdx = -1;
+      let parsedTemplate: ReturnType<typeof TemplateSchema.parse> | null = null;
+      const tryParseSnapshot = (snapshot: string | null): boolean => {
+        if (!snapshot) return false;
+        try {
+          const parsed = TemplateSchema.safeParse(JSON.parse(snapshot));
+          if (parsed.success) {
+            parsedTemplate = parsed.data;
+            return true;
+          }
+        } catch {
+          /* fall through */
+        }
+        return false;
+      };
+      if (!tryParseSnapshot(existing.template_snapshot)) {
+        const tmpl = await templates.getById(existing.template_id);
+        if (tmpl) {
+          const parsed = TemplateSchema.safeParse(yaml.parse(tmpl.yaml));
+          if (parsed.success) parsedTemplate = parsed.data;
+        }
+      }
+      if (parsedTemplate) {
+        orchestrateIdx = parsedTemplate.phases.findIndex(
+          (p) => p.kind === "orchestrate",
+        );
+      }
+      if (orchestrateIdx < 0 || !parsedTemplate) {
+        return sendError(
+          reply,
+          "validation",
+          "chat's template has no orchestrate phase",
+        );
+      }
+
+      // Flip status + phase index. The runner reads
+      // chat.current_phase_idx via runner-multiplex when re-fired.
+      const updated = await chats.update(chatId, {
+        status: "drafting",
+        current_phase_idx: orchestrateIdx,
+      });
+
+      // Re-fire the runner. Fire-and-forget; SSE re-attachers latch
+      // onto the fresh activeRuns entry. Catch the promise so an
+      // unhandled rejection doesn't crash the daemon if the runner
+      // throws synchronously during setup.
+      const entry = runWithMultiplex({
+        chatId,
+        template: parsedTemplate,
+        chat: updated,
+        tmuxMgr,
+        errorDetector,
+      });
+      entry.promise.catch((err: unknown) => {
+        chatLogger(chatId).error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "resumed runner failed",
+        );
+      });
+
+      return successResponse(updated);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       return errorResponse("db_error", message);

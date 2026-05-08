@@ -22,6 +22,7 @@ import {
 } from "../lib/template-schema.js";
 import type { ErrorDetector } from "./error-detector.js";
 import { runAuditPhase } from "./phases/audit.js";
+import { runOrchestratePhase } from "./phases/orchestrate.js";
 import { runDoer } from "./runner/doer-driver.js";
 import { readPriorRoundFeedback } from "./runner/prior-round.js";
 import { runReviewers } from "./runner/reviewer-driver.js";
@@ -59,6 +60,21 @@ export interface PhaseRunnerOptions {
    * at 64 KB, total payload at 256 KB.
    */
   attachedFiles?: string[];
+  /**
+   * Phase index to start the run at. Default 0 (top of the template).
+   * Set by the resume endpoint when a chat was blocked on an audit
+   * checklist — the runner then jumps straight to the orchestrate phase
+   * without re-running audit. Phases before this index are skipped via
+   * `continue` so cross-phase invariants (e.g. all-reviewers-failed
+   * latch) still work for the phases that DO run.
+   */
+  startPhaseIdx?: number;
+  /**
+   * When true, the orchestrate scheduler ignores voice.tier gating and
+   * dispatches any enabled voice in the worker pool. Forwarded from the
+   * chat row's `bypass_quota` column (set on PR-review chats).
+   */
+  bypassQuota?: boolean;
   onEvent: (e: RunnerEvent) => void;
   abortSignal: AbortSignal;
   tmuxMgr: TmuxManager;
@@ -84,6 +100,8 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     artifact,
     repoPath,
     attachedFiles,
+    startPhaseIdx = 0,
+    bypassQuota = false,
     onEvent,
     abortSignal,
     tmuxMgr,
@@ -171,8 +189,22 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   // approving. null when no review-only phase ran (standard templates).
   let reviewOnlyConsensus: { agreed: boolean; summary: string } | null = null;
 
+  // Clamp `startPhaseIdx` defensively — a row with a bogus
+  // current_phase_idx (manual DB edit, schema drift) shouldn't crash the
+  // runner with an out-of-bounds slice. Negative values fall back to 0;
+  // values past the end short-circuit to the post-loop chat-completion
+  // tail (no phases to run).
+  const initialPhaseIdx = Math.max(
+    0,
+    Math.min(startPhaseIdx, template.phases.length),
+  );
+
   try {
-    for (let phaseIdx = 0; phaseIdx < template.phases.length; phaseIdx++) {
+    for (
+      let phaseIdx = initialPhaseIdx;
+      phaseIdx < template.phases.length;
+      phaseIdx++
+    ) {
       if (abortSignal.aborted) break;
 
       const phase = template.phases[phaseIdx];
@@ -285,10 +317,51 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         return;
       }
 
-      // Orchestrate is wired up in a follow-up commit. Skip with a
-      // phase_done so a template that declares one ahead of that lands
-      // doesn't crash the runner.
+      // Orchestrate phase: fan the user-trimmed audit checklist out to
+      // the worker pool. Each worker lands on its own branch — no merge
+      // here; the diff-apply UI aggregates after a human reviews. The
+      // phase is terminal: chat falls through to the existing
+      // chat_done classification below.
       if (phase.kind === "orchestrate") {
+        if (!repoPath) {
+          // templateRequiresRepo enforces this at chat-create time, but
+          // surface a phase_failed for misconfigured manual fires so the
+          // failure mode is visible rather than silent.
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "worker",
+              reason: "missing_repo_path",
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
+        onEvent({
+          chatId,
+          type: "phase_start",
+          payload: {
+            phaseId: phase.id,
+            phaseIdx,
+            kind: phase.kind,
+            role: "orchestrator",
+          },
+          ts: Date.now(),
+        });
+        await runOrchestratePhase({
+          chatDir,
+          chatId,
+          phase,
+          phaseIdx,
+          repoPath,
+          bypassQuota,
+          onEvent,
+          abortSignal,
+        });
         onEvent({
           chatId,
           type: "phase_done",

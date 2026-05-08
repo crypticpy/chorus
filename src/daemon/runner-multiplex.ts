@@ -441,6 +441,15 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     artifact: chat.artifact ?? undefined,
     repoPath: chat.repo_path ?? undefined,
     attachedFiles,
+    // Resume support: a chat that was blocked on an audit checklist gets
+    // re-fired by the resume endpoint with current_phase_idx pointing at
+    // the orchestrate phase. Default 0 so a fresh chat still walks every
+    // phase from the top.
+    startPhaseIdx: chat.current_phase_idx ?? 0,
+    // PR-review chats (and any other path that wants tier gating
+    // disabled) carry this on the row. Forwarded to the orchestrate
+    // scheduler.
+    bypassQuota: chat.bypass_quota === true,
     abortSignal: abortController.signal,
     tmuxMgr,
     errorDetector,
