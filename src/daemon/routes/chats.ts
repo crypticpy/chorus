@@ -1,14 +1,14 @@
-import type { FastifyInstance } from 'fastify';
-import fs from 'fs';
-import path from 'path';
-import yaml from 'yaml';
-import { chats, phaseEvents, templates } from '../../lib/db/index.js';
-import { chatLogger, logger } from '../../lib/logger.js';
+import type { FastifyInstance } from "fastify";
+import fs from "fs";
+import path from "path";
+import yaml from "yaml";
+import { chats, phaseEvents, templates } from "../../lib/db/index.js";
+import { chatLogger, logger } from "../../lib/logger.js";
 import {
   TemplateSchema,
   isReviewOnlyPhase,
   templateRequiresArtifact,
-} from '../../lib/template-schema.js';
+} from "../../lib/template-schema.js";
 import {
   errorResponse,
   listEnvelope,
@@ -16,52 +16,235 @@ import {
   successResponse,
   type ApiResponse,
   type ListEnvelope,
-} from '../api-response.js';
-import type { ErrorDetector } from '../error-detector.js';
-import * as participantAborts from '../participant-aborts.js';
+} from "../api-response.js";
+import type { ErrorDetector } from "../error-detector.js";
+import * as participantAborts from "../participant-aborts.js";
 import {
   abortActiveRun,
   getActiveRun,
   runWithMultiplex,
-} from '../runner-multiplex.js';
-import type { TmuxManager } from '../tmux-types.js';
-import { registerChatStreamRoute } from './chats-stream.js';
-import { isValidChatId } from './chats-validation.js';
+} from "../runner-multiplex.js";
+import type { TmuxManager } from "../tmux-types.js";
+import { registerChatStreamRoute } from "./chats-stream.js";
+import { isValidChatId } from "./chats-validation.js";
 
 export { isValidChatId };
 
 const TERMINAL_STATUSES = [
-  'approved',
-  'merged',
-  'blocked',
-  'cancelled',
-  'failed',
-  'no_review',
+  "approved",
+  "merged",
+  "blocked",
+  "cancelled",
+  "failed",
+  "no_review",
 ] as const;
-type ChatStatus = (typeof TERMINAL_STATUSES)[number] | 'drafting' | 'reviewing';
+type ChatStatus = (typeof TERMINAL_STATUSES)[number] | "drafting" | "reviewing";
 type PhaseKind =
-  | 'plan'
-  | 'spec'
-  | 'tests'
-  | 'implement'
-  | 'review'
-  | 'verify'
-  | 'divergence'
-  | 'review_only';
+  | "plan"
+  | "spec"
+  | "tests"
+  | "implement"
+  | "review"
+  | "verify"
+  | "divergence"
+  | "review_only";
 
 const VALID_PHASE_KINDS: readonly PhaseKind[] = [
-  'plan',
-  'spec',
-  'tests',
-  'implement',
-  'review',
-  'verify',
-  'divergence',
+  "plan",
+  "spec",
+  "tests",
+  "implement",
+  "review",
+  "verify",
+  "divergence",
 ];
 
 interface RegisterChatRoutesArgs {
   tmuxMgr: TmuxManager;
   errorDetector: ErrorDetector;
+}
+
+type ChatRow = Awaited<ReturnType<typeof chats.create>>;
+
+export type CreateChatInputs = {
+  work: string;
+  templateId: string;
+  files?: string[];
+  canonicalRepoPath?: string;
+  artifact?: string;
+  yolo?: boolean;
+  requestId?: string;
+  tmuxMgr: TmuxManager;
+  errorDetector: ErrorDetector;
+};
+
+export type CreateChatResult =
+  | { ok: true; chat: ChatRow }
+  | {
+      ok: false;
+      code: "validation" | "not_found" | "db_error";
+      message: string;
+      data?: Record<string, unknown>;
+    };
+
+// Shared chat-creation tail used by POST /chats and POST /chats/from-pr.
+// Performs template lookup, parses to identify the initial phase, validates
+// the artifact against the template's review-only constraints, persists the
+// chat row + opening phase event, and fire-and-forgets the runner.
+//
+// Caller is responsible for input shape / repoPath canonicalization. This
+// helper assumes everything passed is already syntactically valid.
+export async function createChatFromValidatedInputs(
+  args: CreateChatInputs,
+): Promise<CreateChatResult> {
+  const {
+    work,
+    templateId,
+    files,
+    canonicalRepoPath,
+    artifact,
+    yolo,
+    requestId,
+    tmuxMgr,
+    errorDetector,
+  } = args;
+
+  const tmpl = await templates.getById(templateId);
+  if (!tmpl) {
+    const valid = (await templates.list()).map((t) => t.id);
+    return {
+      ok: false,
+      code: "not_found",
+      message: `Unknown templateId "${templateId}". Valid IDs: ${valid.join(", ")}`,
+      data: { validIds: valid },
+    };
+  }
+  if (!tmpl.is_complete) {
+    return {
+      ok: false,
+      code: "validation",
+      message: `Template "${templateId}" needs setup — at least one slot has no models. Edit the YAML to assign models for your fleet.`,
+    };
+  }
+
+  let initialPhaseKind: PhaseKind = "plan";
+  let parsedTemplateForArtifactCheck: ReturnType<
+    typeof TemplateSchema.parse
+  > | null = null;
+  try {
+    const rawParsed = yaml.parse(tmpl.yaml);
+    const safe = TemplateSchema.safeParse(rawParsed);
+    if (safe.success) {
+      parsedTemplateForArtifactCheck = safe.data;
+      const firstKind = safe.data.phases[0]?.kind;
+      initialPhaseKind = firstKind as PhaseKind;
+    } else {
+      const loose = rawParsed as
+        | { phases?: Array<{ kind?: string }> }
+        | undefined;
+      const firstKind = loose?.phases?.[0]?.kind;
+      if (firstKind === "review_only") initialPhaseKind = "review_only";
+      else if (
+        typeof firstKind === "string" &&
+        (VALID_PHASE_KINDS as readonly string[]).includes(firstKind)
+      ) {
+        initialPhaseKind = firstKind as PhaseKind;
+      }
+    }
+  } catch {
+    /* fall through with 'plan' default */
+  }
+
+  if (
+    parsedTemplateForArtifactCheck &&
+    templateRequiresArtifact(parsedTemplateForArtifactCheck)
+  ) {
+    if (typeof artifact !== "string" || artifact.trim().length === 0) {
+      return {
+        ok: false,
+        code: "validation",
+        message: "artifact is required for review-only templates",
+      };
+    }
+    const firstPhase = parsedTemplateForArtifactCheck.phases[0];
+    if (firstPhase && isReviewOnlyPhase(firstPhase)) {
+      const maxBytes = firstPhase.artifact.maxBytes;
+      const byteLen = Buffer.byteLength(artifact, "utf-8");
+      if (byteLen > maxBytes) {
+        return {
+          ok: false,
+          code: "validation",
+          message: `artifact exceeds template limit (${byteLen} bytes > ${maxBytes} bytes)`,
+        };
+      }
+    }
+  } else if (artifact !== undefined && artifact !== null && artifact !== "") {
+    return {
+      ok: false,
+      code: "validation",
+      message: "artifact is only valid for review-only templates",
+    };
+  }
+
+  const chat = await chats.create({
+    work,
+    template_id: templateId,
+    attached_files: files ? JSON.stringify(files) : undefined,
+    repo_path: canonicalRepoPath,
+    artifact: artifact ?? undefined,
+    yolo: yolo === true,
+  });
+
+  await phaseEvents.create({
+    chat_id: chat.id,
+    phase_idx: 0,
+    phase_kind: initialPhaseKind,
+    role: "doer",
+    agent_id: null,
+    state: "drafting",
+    output: null,
+    cost_usd: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    started_at: Date.now(),
+    finished_at: null,
+  });
+
+  chatLogger(chat.id).info(
+    {
+      templateId,
+      phaseKind: initialPhaseKind,
+      requestId,
+      hasArtifact:
+        artifact !== undefined && artifact !== null && artifact !== "",
+      hasRepoPath: canonicalRepoPath !== undefined,
+      attachedFileCount: files?.length ?? 0,
+    },
+    "chat created",
+  );
+
+  // Auto-fire the runner. Fire-and-forget; the SSE route attaches to the
+  // existing activeRuns entry rather than re-creating one.
+  if (
+    parsedTemplateForArtifactCheck &&
+    !(TERMINAL_STATUSES as readonly string[]).includes(chat.status)
+  ) {
+    const entry = runWithMultiplex({
+      chatId: chat.id,
+      template: parsedTemplateForArtifactCheck,
+      chat,
+      tmuxMgr,
+      errorDetector,
+    });
+    entry.promise.catch((err: unknown) => {
+      chatLogger(chat.id).error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "auto-fired chat runner failed",
+      );
+    });
+  }
+
+  return { ok: true, chat };
 }
 
 export function registerChatRoutes(
@@ -71,7 +254,7 @@ export function registerChatRoutes(
   fastify.get<{
     Querystring: { status?: string; limit?: string; offset?: string };
     Reply: ApiResponse<ListEnvelope<object>>;
-  }>('/chats', async (request) => {
+  }>("/chats", async (request) => {
     try {
       const { status, limit, offset } = request.query;
       const list = await chats.list({
@@ -81,30 +264,34 @@ export function registerChatRoutes(
       });
       return successResponse(listEnvelope(list));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
   fastify.get<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/chats/:id', async (request, reply) => {
+  }>("/chats/:id", async (request, reply) => {
     try {
       if (!isValidChatId(request.params.id)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       const chat = await chats.getBySlugOrId(request.params.id);
       if (!chat) {
-        return sendError(reply, 'not_found', `Chat ${request.params.id} not found`);
+        return sendError(
+          reply,
+          "not_found",
+          `Chat ${request.params.id} not found`,
+        );
       }
       // phaseEvents.list keys by ULID, not slug. Use the resolved row's
       // id so a /chats/<slug> request returns events correctly.
       const events = await phaseEvents.list(chat.id);
       return successResponse({ ...chat, events });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
@@ -118,12 +305,17 @@ export function registerChatRoutes(
       yolo?: boolean;
     };
     Reply: ApiResponse<object>;
-  }>('/chats', async (request, reply) => {
+  }>("/chats", async (request, reply) => {
     try {
-      const { work, templateId, files, repoPath, artifact, yolo } = request.body;
+      const { work, templateId, files, repoPath, artifact, yolo } =
+        request.body;
 
       if (!work || !templateId) {
-        return sendError(reply, 'validation', 'work and templateId are required');
+        return sendError(
+          reply,
+          "validation",
+          "work and templateId are required",
+        );
       }
 
       // Validate repoPath — must be an absolute path to an existing
@@ -147,8 +339,12 @@ export function registerChatRoutes(
       // repoPath was supplied — the chat creates without one.
       let canonicalRepoPath: string | undefined;
       if (repoPath !== undefined) {
-        if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) {
-          return sendError(reply, 'validation', 'repoPath must be an absolute path');
+        if (typeof repoPath !== "string" || !path.isAbsolute(repoPath)) {
+          return sendError(
+            reply,
+            "validation",
+            "repoPath must be an absolute path",
+          );
         }
         const resolved = path.resolve(repoPath);
         try {
@@ -156,7 +352,11 @@ export function registerChatRoutes(
           // exists. Throws ENOENT if either link or target is missing.
           canonicalRepoPath = fs.realpathSync(resolved);
         } catch {
-          return sendError(reply, 'validation', `repoPath does not exist: ${resolved}`);
+          return sendError(
+            reply,
+            "validation",
+            `repoPath does not exist: ${resolved}`,
+          );
         }
         let stat: fs.Stats;
         try {
@@ -164,212 +364,57 @@ export function registerChatRoutes(
         } catch {
           return sendError(
             reply,
-            'validation',
+            "validation",
             `repoPath does not exist: ${canonicalRepoPath}`,
           );
         }
         if (!stat.isDirectory()) {
           return sendError(
             reply,
-            'validation',
+            "validation",
             `repoPath must be a directory: ${canonicalRepoPath}`,
           );
         }
       }
 
-      // C4 — template existence check is the daemon-side invariant (the
-      // MCP layer also validates, but only this check is authoritative).
-      // Pre-fix, an unknown templateId silently fell through to chat
-      // creation and the runner stalled looking up a row that didn't
-      // exist; the user saw a chat stuck in 'drafting' forever.
-      const tmpl = await templates.getById(templateId);
-      if (!tmpl) {
-        const valid = (await templates.list()).map((t) => t.id);
-        return sendError(
-          reply,
-          'not_found',
-          `Unknown templateId "${templateId}". Valid IDs: ${valid.join(', ')}`,
-          { validIds: valid },
-        );
-      }
-      // Refuse to create a chat off an incomplete template — the seed
-      // adapter couldn't fill at least one slot from the user's voices.
-      // Without this gate, the runner stalls when it hits the empty
-      // models[] array and the user sees a confusing "no model
-      // available" error mid-run.
-      if (!tmpl.is_complete) {
-        return sendError(
-          reply,
-          'validation',
-          `Template "${templateId}" needs setup — at least one slot has no models. Edit the YAML to assign models for your fleet.`,
-        );
-      }
-
-      // Parse the template up-front so we can branch on review-only vs
-      // standard. Two reads of the same template are tolerable (this
-      // path is request-scoped, not hot); the alternative is hand-rolling
-      // YAML parsing twice in the same handler.
-      let initialPhaseKind: PhaseKind = 'plan';
-      let parsedTemplateForArtifactCheck: ReturnType<typeof TemplateSchema.parse> | null = null;
-      try {
-        const rawParsed = yaml.parse(tmpl.yaml);
-        const safe = TemplateSchema.safeParse(rawParsed);
-        if (safe.success) {
-          parsedTemplateForArtifactCheck = safe.data;
-          const firstKind = safe.data.phases[0]?.kind;
-          initialPhaseKind = firstKind as PhaseKind;
-        } else {
-          // Fall back to a loose read so older malformed templates
-          // still produce an initial event with their declared kind.
-          const loose = rawParsed as { phases?: Array<{ kind?: string }> } | undefined;
-          const firstKind = loose?.phases?.[0]?.kind;
-          if (firstKind === 'review_only') initialPhaseKind = 'review_only';
-          else if (
-            typeof firstKind === 'string' &&
-            (VALID_PHASE_KINDS as readonly string[]).includes(firstKind)
-          ) {
-            initialPhaseKind = firstKind as PhaseKind;
-          }
-        }
-      } catch {
-        /* fall through with 'plan' default */
-      }
-
-      // Artifact validation — only meaningful for review-only templates.
-      if (
-        parsedTemplateForArtifactCheck &&
-        templateRequiresArtifact(parsedTemplateForArtifactCheck)
-      ) {
-        if (typeof artifact !== 'string' || artifact.trim().length === 0) {
-          return sendError(
-            reply,
-            'validation',
-            'artifact is required for review-only templates',
-          );
-        }
-        const firstPhase = parsedTemplateForArtifactCheck.phases[0];
-        if (firstPhase && isReviewOnlyPhase(firstPhase)) {
-          const maxBytes = firstPhase.artifact.maxBytes;
-          const byteLen = Buffer.byteLength(artifact, 'utf-8');
-          if (byteLen > maxBytes) {
-            return sendError(
-              reply,
-              'validation',
-              `artifact exceeds template limit (${byteLen} bytes > ${maxBytes} bytes)`,
-            );
-          }
-        }
-      } else if (artifact !== undefined && artifact !== null && artifact !== '') {
-        // Non-review-only templates: artifact is meaningless. Reject
-        // loudly so callers don't silently lose payload (e.g. mistyped
-        // templateId pointing at a full-pipeline template).
-        return sendError(
-          reply,
-          'validation',
-          'artifact is only valid for review-only templates',
-        );
-      }
-
-      const chat = await chats.create({
+      const result = await createChatFromValidatedInputs({
         work,
-        template_id: templateId,
-        attached_files: files ? JSON.stringify(files) : undefined,
-        // Persist the canonical (realpath-resolved) repo path so a
-        // later swap of an intermediate symlink can't redirect the
-        // doer's cwd. See Audit D2 BLOCKER for the attack scenario.
-        repo_path: canonicalRepoPath,
-        artifact: artifact ?? undefined,
-        yolo: yolo === true,
+        templateId,
+        files,
+        canonicalRepoPath,
+        artifact,
+        yolo,
+        requestId: request.id,
+        tmuxMgr,
+        errorDetector,
       });
-
-      await phaseEvents.create({
-        chat_id: chat.id,
-        phase_idx: 0,
-        phase_kind: initialPhaseKind,
-        role: 'doer',
-        agent_id: null,
-        state: 'drafting',
-        output: null,
-        cost_usd: 0,
-        tokens_in: 0,
-        tokens_out: 0,
-        started_at: Date.now(),
-        finished_at: null,
-      });
-
-      chatLogger(chat.id).info(
-        {
-          templateId,
-          phaseKind: initialPhaseKind,
-          requestId: request.id,
-          hasArtifact: artifact !== undefined && artifact !== null && artifact !== '',
-          hasRepoPath: repoPath !== undefined,
-          attachedFileCount: files?.length ?? 0,
-        },
-        'chat created',
-      );
-
-      // Auto-fire the runner. Earlier code left chats inert until a
-      // client hit /chats/:id/stream — fine for the cockpit (the run
-      // page subscribes on open), but the MCP path (autonomous batch
-      // reviews, scripts) had no way to trigger the run without a curl-
-      // trigger workaround. Fire-and-forget; the SSE route still attaches
-      // to the existing activeRuns entry rather than re-creating one.
-      //
-      // Skip when:
-      //   - template parsing failed (nothing valid to run)
-      //   - chat is already in a terminal state (defensive — a fresh
-      //     row should always be drafting; rules out manual DB seeds and
-      //     replay bugs)
-      //
-      // `yolo: false` is NOT checked because chat.status has no
-      // pre-run/pending state to pause at — yolo today only gates ship.
-      if (
-        parsedTemplateForArtifactCheck &&
-        !(TERMINAL_STATUSES as readonly string[]).includes(chat.status)
-      ) {
-        // Chain `.catch` so an async rejection inside runChat doesn't
-        // escape as an unhandled promise rejection (Node.js >= 15
-        // terminates the process on those).
-        const entry = runWithMultiplex({
-          chatId: chat.id,
-          template: parsedTemplateForArtifactCheck,
-          chat,
-          tmuxMgr,
-          errorDetector,
-        });
-        entry.promise.catch((err: unknown) => {
-          chatLogger(chat.id).error(
-            { err: err instanceof Error ? err.message : String(err) },
-            'auto-fired chat runner failed',
-          );
-        });
+      if (!result.ok) {
+        return sendError(reply, result.code, result.message, result.data);
       }
-
-      return successResponse(chat);
+      return successResponse(result.chat);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : "Unknown error";
       logger.error(
-        { requestId: request.id, err: message, route: 'POST /chats' },
-        'chat create failed',
+        { requestId: request.id, err: message, route: "POST /chats" },
+        "chat create failed",
       );
-      return errorResponse('db_error', message);
+      return errorResponse("db_error", message);
     }
   });
 
   fastify.post<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/chats/:id/cancel', async (request, reply) => {
+  }>("/chats/:id/cancel", async (request, reply) => {
     try {
       const param = request.params.id;
       if (!isValidChatId(param)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       // Resolve slug → ULID first. Cancel/abort/tmux all key by ULID.
       const existing = await chats.getBySlugOrId(param);
       if (!existing) {
-        return sendError(reply, 'not_found', `Chat ${param} not found`);
+        return sendError(reply, "not_found", `Chat ${param} not found`);
       }
       const chatId = existing.id;
       const chat = await chats.cancel(chatId);
@@ -392,8 +437,8 @@ export function registerChatRoutes(
 
       return successResponse(chat);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
@@ -411,11 +456,11 @@ export function registerChatRoutes(
   fastify.post<{
     Params: { id: string; key: string };
     Reply: ApiResponse<{ aborted: boolean }>;
-  }>('/chats/:id/participants/:key/cancel', async (request, reply) => {
+  }>("/chats/:id/participants/:key/cancel", async (request, reply) => {
     try {
       const id = request.params.id;
       if (!isValidChatId(id)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       const key = request.params.key;
       // Strict key shape — both prefixes the registry uses. Reject
@@ -424,17 +469,17 @@ export function registerChatRoutes(
       // MUST start with an alphanumeric (not `-`/`_`) so a key like
       // `reviewer--0` (empty agent name) is rejected.
       if (!/^(doer-|reviewer-)[A-Za-z0-9][A-Za-z0-9_-]*(?:-\d+)?$/.test(key)) {
-        return sendError(reply, 'validation', 'invalid participant key');
+        return sendError(reply, "validation", "invalid participant key");
       }
       const existing = await chats.getBySlugOrId(id);
       if (!existing) {
-        return sendError(reply, 'not_found', `Chat ${id} not found`);
+        return sendError(reply, "not_found", `Chat ${id} not found`);
       }
       const aborted = participantAborts.abortParticipant(existing.id, key);
       return successResponse({ aborted });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
@@ -446,15 +491,15 @@ export function registerChatRoutes(
   fastify.post<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/chats/:id/rerun', async (request, reply) => {
+  }>("/chats/:id/rerun", async (request, reply) => {
     try {
       const param = request.params.id;
       if (!isValidChatId(param)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       const original = await chats.getBySlugOrId(param);
       if (!original) {
-        return sendError(reply, 'not_found', `Chat ${param} not found`);
+        return sendError(reply, "not_found", `Chat ${param} not found`);
       }
       // Guard against rerun-on-active. The cockpit Retry button only
       // renders for terminal statuses, but a direct API call could
@@ -464,7 +509,7 @@ export function registerChatRoutes(
       if (!(TERMINAL_STATUSES as readonly string[]).includes(original.status)) {
         return sendError(
           reply,
-          'conflict',
+          "conflict",
           `Chat ${param} is still active (status=${original.status}). Cancel it first, then retry.`,
         );
       }
@@ -491,7 +536,7 @@ export function registerChatRoutes(
       });
       // Mirror the create-path's initial phase_event so the cockpit
       // gets a populated stepper from t=0.
-      let initialPhaseKind: PhaseKind = 'plan';
+      let initialPhaseKind: PhaseKind = "plan";
       try {
         const tmpl = await templates.getById(original.template_id);
         if (tmpl) {
@@ -508,9 +553,9 @@ export function registerChatRoutes(
         chat_id: newChat.id,
         phase_idx: 0,
         phase_kind: initialPhaseKind,
-        role: 'doer',
+        role: "doer",
         agent_id: null,
-        state: 'drafting',
+        state: "drafting",
         output: null,
         cost_usd: 0,
         tokens_in: 0,
@@ -520,8 +565,8 @@ export function registerChatRoutes(
       });
       return successResponse(newChat);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
@@ -533,15 +578,15 @@ export function registerChatRoutes(
   fastify.delete<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/chats/:id', async (request, reply) => {
+  }>("/chats/:id", async (request, reply) => {
     try {
       const id = request.params.id;
       if (!isValidChatId(id)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       const existing = await chats.getBySlugOrId(id);
       if (!existing) {
-        return successResponse({ id, deleted: false, reason: 'not_found' });
+        return successResponse({ id, deleted: false, reason: "not_found" });
       }
       // Resolve to the row's authoritative ULID — every downstream key
       // (activeRuns, tmux sessions, phase_events, chat dir on disk)
@@ -551,7 +596,7 @@ export function registerChatRoutes(
       const ulid = existing.id;
 
       // 1. Cancel first if still active — flips status, signals abort.
-      if (existing.status === 'drafting' || existing.status === 'reviewing') {
+      if (existing.status === "drafting" || existing.status === "reviewing") {
         try {
           await chats.cancel(ulid);
         } catch {
@@ -591,8 +636,8 @@ export function registerChatRoutes(
       await chats.delete(ulid);
 
       // 4. Nuke chat artifacts directory.
-      const osModule = await import('os');
-      const chatDir = path.join(osModule.homedir(), '.chorus', 'chats', ulid);
+      const osModule = await import("os");
+      const chatDir = path.join(osModule.homedir(), ".chorus", "chats", ulid);
       if (fs.existsSync(chatDir)) {
         try {
           fs.rmSync(chatDir, { recursive: true, force: true });
@@ -605,8 +650,8 @@ export function registerChatRoutes(
 
       return successResponse({ id: ulid, deleted: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
@@ -615,21 +660,21 @@ export function registerChatRoutes(
     Params: { id: string };
     Body: { answer: string };
     Reply: ApiResponse<object>;
-  }>('/chats/:id/resume', async (request, reply) => {
+  }>("/chats/:id/resume", async (request, reply) => {
     try {
       const chatId = request.params.id;
       if (!isValidChatId(chatId)) {
-        return sendError(reply, 'validation', 'invalid chat id');
+        return sendError(reply, "validation", "invalid chat id");
       }
       const { answer } = request.body;
       if (!answer) {
-        return sendError(reply, 'validation', 'answer is required');
+        return sendError(reply, "validation", "answer is required");
       }
-      const chat = await chats.update(chatId, { status: 'reviewing' });
+      const chat = await chats.update(chatId, { status: "reviewing" });
       return successResponse(chat);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
     }
   });
 
