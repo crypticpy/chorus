@@ -445,7 +445,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       template.ship?.enabled &&
       repoPath
     ) {
-      const ctx = detectGitContext(repoPath, template.ship.baseBranch);
+      const ctx = await detectGitContext(repoPath, template.ship.baseBranch);
       if (!ctx.ok) {
         // Surface as a skip with reason — chat still ends approved
         // (we didn't ship, but the review was real).

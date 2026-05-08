@@ -127,19 +127,30 @@ const VALID_CHAT_STATUSES = [
 ] as const;
 type ChatStatus = (typeof VALID_CHAT_STATUSES)[number];
 
+type ParsedAttachedFiles =
+  | { kind: "empty" }
+  | { kind: "ok"; files: string[] }
+  | { kind: "invalid"; detail: string };
+
 function parseAttachedFiles(
   raw: string | null | undefined,
-): string[] | undefined {
-  if (!raw) return undefined;
+): ParsedAttachedFiles {
+  if (!raw) return { kind: "empty" };
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) {
-      return parsed;
+      return { kind: "ok", files: parsed };
     }
-  } catch {
-    /* ignore */
+    return {
+      kind: "invalid",
+      detail: "attached_files JSON is not a string array",
+    };
+  } catch (err) {
+    return {
+      kind: "invalid",
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
-  return undefined;
 }
 
 export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
@@ -196,7 +207,30 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
           sub.queue.push(line);
           if (sub.queue.length > 1000) {
             // Queue cap exceeded; drop subscriber to prevent unbounded
-            // memory.
+            // memory. Pre-fix the drop was completely silent — neither
+            // the daemon log nor the client got any signal, so a stalled
+            // SSE viewer just stopped seeing events with no diagnostic
+            // trace. Emit one `error` frame so a client that's still
+            // attached can show a banner, and log so an operator
+            // tailing daemon.log sees it.
+            try {
+              sub.write(
+                `data: ${JSON.stringify({
+                  type: "error",
+                  error: {
+                    code: "sse_backpressure",
+                    message:
+                      "subscriber queue cap exceeded; dropping connection",
+                  },
+                })}\n\n`,
+              );
+            } catch {
+              /* already dead */
+            }
+            chatLogger(chatId).warn(
+              { queueLen: sub.queue.length },
+              "sse subscriber dropped: queue cap exceeded",
+            );
             toRemove.push(sub);
             sub.close();
           }
@@ -376,13 +410,37 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     }
   };
 
+  const parsedAttached = parseAttachedFiles(chat.attached_files);
+  if (parsedAttached.kind === "invalid") {
+    // The chat row stored an attached_files blob we can't parse. Pre-fix
+    // we silently dropped it and ran the chat with no files — the user
+    // saw their attachments evaporate with no signal in the cockpit or
+    // daemon log. Surface as both a logger warning AND a `cli_warning`
+    // SSE so the run page can render which chat lost its file list.
+    chatLogger(chatId).warn(
+      { detail: parsedAttached.detail },
+      "parseAttachedFiles: dropped malformed attached_files JSON",
+    );
+    onEvent({
+      chatId,
+      type: "cli_warning",
+      payload: {
+        kind: "attached_files_invalid",
+        message: `Stored attached_files JSON could not be parsed (${parsedAttached.detail}). Running with no attachments.`,
+      },
+      ts: Date.now(),
+    });
+  }
+  const attachedFiles =
+    parsedAttached.kind === "ok" ? parsedAttached.files : undefined;
+
   const promise = runChat({
     chatId,
     template,
     work: chat.work,
     artifact: chat.artifact ?? undefined,
     repoPath: chat.repo_path ?? undefined,
-    attachedFiles: parseAttachedFiles(chat.attached_files),
+    attachedFiles,
     abortSignal: abortController.signal,
     tmuxMgr,
     errorDetector,
