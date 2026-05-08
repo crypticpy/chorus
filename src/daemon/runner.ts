@@ -21,6 +21,7 @@ import {
   type Template,
 } from "../lib/template-schema.js";
 import type { ErrorDetector } from "./error-detector.js";
+import { runAuditPhase } from "./phases/audit.js";
 import { runDoer } from "./runner/doer-driver.js";
 import { readPriorRoundFeedback } from "./runner/prior-round.js";
 import { runReviewers } from "./runner/reviewer-driver.js";
@@ -225,10 +226,69 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         continue;
       }
 
-      // Audit and orchestrate phases are wired up in follow-up commits.
-      // Skip them with a phase_done so a template author who declares one
-      // before that lands gets a clean no-op rather than a runner crash.
-      if (phase.kind === "audit" || phase.kind === "orchestrate") {
+      // Audit phase: run a single structured-output reviewer against the
+      // user's repo, persist the checklist, and block the chat so the
+      // cockpit can render the approval UI. The orchestrate phase that
+      // follows is fired from a follow-up resume call, not from this
+      // loop — so we set status=blocked and break out cleanly.
+      if (phase.kind === "audit") {
+        if (!repoPath) {
+          // Schema-level guard (templateRequiresRepo) ensures audit
+          // templates are only created with a repo. Surface a phase_failed
+          // here so a manually-misconfigured chat fails loudly rather
+          // than silently producing no checklist.
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "audit",
+              reason: "missing_repo_path",
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
+        const auditOutcome = await runAuditPhase({
+          chatDir,
+          chatId,
+          phase,
+          phaseIdx,
+          work,
+          repoPath,
+          onEvent,
+          abortSignal,
+        });
+        if (!auditOutcome.completed) {
+          // Aborted or the structured request errored. The phase already
+          // emitted phase_failed; let the chat fall through to the normal
+          // error-aware terminal classification below.
+          break;
+        }
+        // Block the chat so the cockpit shows the checklist UI. The
+        // resume endpoint (a follow-up step) re-fires the runner against
+        // the next phase with the user's selected items.
+        try {
+          await chats.update(chatId, { status: "blocked" });
+        } catch (err) {
+          logger.warn(
+            { chatId, err: err instanceof Error ? err.message : String(err) },
+            "audit phase: failed to flip chat status to blocked",
+          );
+        }
+        // Skip emitChatDone — `blocked` is a terminal-but-resumable state
+        // the cockpit handles itself. emitChatDone would clobber it with
+        // `approved` on the way out.
+        chatDoneEmitted = true;
+        return;
+      }
+
+      // Orchestrate is wired up in a follow-up commit. Skip with a
+      // phase_done so a template that declares one ahead of that lands
+      // doesn't crash the runner.
+      if (phase.kind === "orchestrate") {
         onEvent({
           chatId,
           type: "phase_done",

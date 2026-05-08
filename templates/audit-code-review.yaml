@@ -1,0 +1,47 @@
+id: audit-code-review
+name: Audit — Code Review
+description: |
+  One reviewer audits the working tree for bugs and safety issues
+  (logic defects, races, leaks, input-handling holes, weak error
+  paths). Produces a checklist; you trim it; three workers fan out on
+  per-task branches to apply fixes.
+author: chorus
+agreementThreshold: 0.66
+onThresholdMet: ask
+maxRounds: 1
+yoloDefault: false
+estimatedBaselineTokens: 600
+
+phases:
+  - id: audit
+    kind: audit
+    title: Code Review Audit
+    preset: code-review
+    description: Surface concrete bugs and safety issues — logic defects, races, leaks, input validation holes.
+    reviewer:
+      lineage: anthropic
+      models:
+        - claude-opus-4-7
+    inputs:
+      include: []
+      exclude: []
+
+  - id: orchestrate
+    kind: orchestrate
+    title: Fix Workers
+    description: Three workers each take a slice of the approved checklist and land fixes on isolated branches.
+    workers:
+      - lineage: anthropic
+        models:
+          - claude-opus-4-7
+      - lineage: openai
+        models:
+          - gpt-5.5
+      - lineage: google
+        models:
+          - gemini-3.1-pro-preview
+    branchPrefix: "chorus/{chatId}/worker-{idx}"
+    maxConcurrentWorkers: 3
+    inputs:
+      include: []
+      exclude: []

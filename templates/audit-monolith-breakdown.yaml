@@ -1,0 +1,46 @@
+id: audit-monolith-breakdown
+name: Audit — Monolith Breakdown
+description: |
+  One reviewer scans the tree for files that have grown into monoliths
+  and proposes splits. Produces a checklist; you trim it; three workers
+  fan out on per-task branches to land the splits.
+author: chorus
+agreementThreshold: 0.66
+onThresholdMet: ask
+maxRounds: 1
+yoloDefault: false
+estimatedBaselineTokens: 600
+
+phases:
+  - id: audit
+    kind: audit
+    title: Monolith Breakdown Audit
+    preset: monolith-breakdown
+    description: Find files that have grown into multi-responsibility monoliths and propose concrete splits.
+    reviewer:
+      lineage: anthropic
+      models:
+        - claude-opus-4-7
+    inputs:
+      include: []
+      exclude: []
+
+  - id: orchestrate
+    kind: orchestrate
+    title: Split Workers
+    description: Three workers each take a slice of the approved checklist and land the splits on isolated branches.
+    workers:
+      - lineage: anthropic
+        models:
+          - claude-opus-4-7
+      - lineage: openai
+        models:
+          - gpt-5.5
+      - lineage: google
+        models:
+          - gemini-3.1-pro-preview
+    branchPrefix: "chorus/{chatId}/worker-{idx}"
+    maxConcurrentWorkers: 3
+    inputs:
+      include: []
+      exclude: []
