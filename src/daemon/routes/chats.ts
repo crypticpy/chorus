@@ -25,6 +25,7 @@ import {
   runWithMultiplex,
 } from "../runner-multiplex.js";
 import type { TmuxManager } from "../tmux-types.js";
+import { registerChatsFromPrRoute } from "./chats-from-pr.js";
 import { registerChatStreamRoute } from "./chats-stream.js";
 import { isValidChatId } from "./chats-validation.js";
 
@@ -678,5 +679,6 @@ export function registerChatRoutes(
     }
   });
 
+  registerChatsFromPrRoute(fastify, { tmuxMgr, errorDetector });
   registerChatStreamRoute(fastify, { tmuxMgr, errorDetector });
 }
