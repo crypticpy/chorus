@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  OrchestrateManifestSchema,
   PhaseSchema,
   TemplateSchema,
   isReviewOnlyPhase,
@@ -227,6 +228,57 @@ describe("TemplateSchema hybrid guard", () => {
         result.error.issues.some((i) => i.message.includes("unique")),
       ).toBe(true);
     }
+  });
+});
+
+describe("OrchestrateManifestSchema", () => {
+  const VALID_MANIFEST = {
+    workers: [
+      {
+        idx: 0,
+        itemId: "fix-1",
+        voiceId: "claude-opus-4-7",
+        branch: "chorus/abc/worker-0",
+        diffStat: " src/foo.ts | 3 +--\n 1 file changed",
+        status: "completed" as const,
+      },
+      {
+        idx: 1,
+        itemId: "fix-2",
+        voiceId: "claude-opus-4-7",
+        branch: "chorus/abc/worker-1",
+        diffStat: "",
+        status: "failed" as const,
+        error: "worker timed out after 600s",
+      },
+    ],
+    completedAt: 1_700_000_000_000,
+  };
+
+  it("round-trips a valid manifest", () => {
+    const parsed = OrchestrateManifestSchema.safeParse(VALID_MANIFEST);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.workers).toHaveLength(2);
+      expect(parsed.data.workers[0].status).toBe("completed");
+      expect(parsed.data.workers[1].error).toBe("worker timed out after 600s");
+    }
+  });
+
+  it("rejects a manifest missing required fields", () => {
+    const bad = {
+      workers: [{ idx: 0, itemId: "fix-1" }],
+      completedAt: 1,
+    };
+    expect(OrchestrateManifestSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects a manifest with an invalid status enum", () => {
+    const bad = {
+      ...VALID_MANIFEST,
+      workers: [{ ...VALID_MANIFEST.workers[0], status: "in_progress" }],
+    };
+    expect(OrchestrateManifestSchema.safeParse(bad).success).toBe(false);
   });
 });
 

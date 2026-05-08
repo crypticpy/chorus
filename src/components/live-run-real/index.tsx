@@ -15,9 +15,16 @@
  */
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { isReviewOnlyTemplate, type Template } from "@/lib/types";
+import type {
+  AuditItem,
+  OrchestrateManifest as OrchestrateManifestType,
+} from "@/lib/template-schema";
+import { OrchestrateManifest } from "../orchestrate-manifest";
+import { RunChecklist } from "../run-checklist";
 import { BriefHeading } from "../run-viewer/brief-heading";
 import { RoundView } from "../run-viewer/round-view";
 import type {
@@ -74,6 +81,15 @@ interface Props {
   initialVerdict?: string;
   /** Demo-only — see DemoDataSource. */
   demoDataSource?: DemoDataSource;
+  /** Audit checklist persisted to disk by the audit phase. Non-null when
+   *  the chat reached the audit blocking gate; rendered as the run-checklist
+   *  prompt while status==='blocked' and no manifest exists yet. */
+  initialAuditItems?: AuditItem[] | null;
+  /** Orchestrate manifest persisted by the orchestrate phase. Non-null
+   *  once orchestrate finished; if both this AND auditItems are present
+   *  (resumed-then-completed run), the manifest wins — the user's past
+   *  the gate and wants the worker rows, not the checklist. */
+  initialManifest?: OrchestrateManifestType | null;
 }
 
 export function LiveRunReal({
@@ -88,7 +104,10 @@ export function LiveRunReal({
   initialShipError,
   initialVerdict,
   demoDataSource,
+  initialAuditItems,
+  initialManifest,
 }: Props) {
+  const router = useRouter();
   const [status, setStatus] = useState(initialStatus);
   const [verdict, setVerdict] = useState<string | undefined>(initialVerdict);
   const [rounds, setRounds] = useState<RoundSnapshot[]>(initialRounds);
@@ -576,6 +595,48 @@ export function LiveRunReal({
           tool surface. */}
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto w-full space-y-8">
+          {/* Audit checklist / orchestrate manifest. Mutually exclusive:
+              manifest wins when both exist (resumed-then-completed run).
+              Audit checklist only renders while status === 'blocked'
+              (the audit phase parks here waiting for user approval).
+              Both states sit at the top of the body — above the round
+              cards so the user's next action is the first thing they see. */}
+          {initialManifest ? (
+            <OrchestrateManifest chatId={chatId} manifest={initialManifest} />
+          ) : (
+            status === "blocked" &&
+            initialAuditItems &&
+            initialAuditItems.length > 0 && (
+              <RunChecklist
+                items={initialAuditItems}
+                onSubmit={async (selectedIds) => {
+                  const res = await fetch(
+                    `/api/daemon/chats/${chatId}/resume`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        answer: JSON.stringify(selectedIds),
+                      }),
+                    },
+                  );
+                  if (!res.ok) {
+                    const body = (await res.json().catch(() => null)) as {
+                      error?: { message?: string };
+                    } | null;
+                    throw new Error(
+                      body?.error?.message ?? `HTTP ${res.status}`,
+                    );
+                  }
+                  // Refresh so the SSR re-reads the chat row + manifest
+                  // sidecar and the page transitions from checklist
+                  // gate → running orchestrate phase.
+                  router.refresh();
+                }}
+              />
+            )
+          )}
+
           {rounds.length === 0 && (
             <div className="rounded-lg border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
               Waiting for first phase to start…

@@ -5,6 +5,12 @@ import { notFound } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { LiveRunReal } from "@/components/live-run-real";
 import { getChat, getTemplate, DaemonError } from "@/lib/api";
+import {
+  AuditOutputSchema,
+  OrchestrateManifestSchema,
+  type AuditItem,
+  type OrchestrateManifest,
+} from "@/lib/template-schema";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +51,10 @@ async function getRunData(runId: string) {
   return { chat, template };
 }
 
-const AGENT_TO_LINEAGE: Record<string, "claude" | "codex" | "gemini" | "opencode" | "kimi" | "openrouter"> = {
+const AGENT_TO_LINEAGE: Record<
+  string,
+  "claude" | "codex" | "gemini" | "opencode" | "kimi" | "openrouter"
+> = {
   "claude-code": "claude",
   "codex-cli": "codex",
   "gemini-cli": "gemini",
@@ -99,8 +108,12 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
       .readdirSync(roundDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => {
-        const role: "doer" | "reviewer" = d.name.startsWith("doer-") ? "doer" : "reviewer";
-        const rawAgent = d.name.replace(/^(doer-|reviewer-)/, "").replace(/-\d+$/, "");
+        const role: "doer" | "reviewer" = d.name.startsWith("doer-")
+          ? "doer"
+          : "reviewer";
+        const rawAgent = d.name
+          .replace(/^(doer-|reviewer-)/, "")
+          .replace(/-\d+$/, "");
         const lineage = AGENT_TO_LINEAGE[rawAgent] ?? "claude";
         const answerPath = path.join(roundDir, d.name, "answer.md");
         // hasAnswer must mirror the API route: gated on the `## DONE`
@@ -165,7 +178,8 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
                 costUsd?: unknown;
               };
             };
-            if (typeof stats.durationMs === "number") durationMs = stats.durationMs;
+            if (typeof stats.durationMs === "number")
+              durationMs = stats.durationMs;
             if (stats.usage && typeof stats.usage === "object") {
               const u: Record<string, number> = {};
               if (typeof stats.usage.inputTokens === "number")
@@ -203,6 +217,52 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
   return rounds.sort((a, b) => a.round - b.round);
 }
 
+/**
+ * Read the audit checklist and orchestrate manifest sidecars from the
+ * chat dir. Both files are produced by their respective phase runners
+ * (`audit.ts` writes audit-output.json on phase finish; `orchestrate.ts`
+ * writes orchestrate-manifest.json once every worker has run). Returning
+ * `null` for either when absent or malformed lets LiveRunReal pick the
+ * right state without bouncing through SSE — the audit phase parks in
+ * blocked status and the run page renders the checklist on first paint.
+ */
+function readAuditAndManifest(chatId: string): {
+  auditItems: AuditItem[] | null;
+  manifest: OrchestrateManifest | null;
+} {
+  const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
+  let auditItems: AuditItem[] | null = null;
+  let manifest: OrchestrateManifest | null = null;
+
+  const auditPath = path.join(chatDir, "audit-output.json");
+  if (fs.existsSync(auditPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(auditPath, "utf-8"));
+      const parsed = AuditOutputSchema.safeParse(raw);
+      if (parsed.success) {
+        auditItems = parsed.data.items;
+      }
+    } catch {
+      /* malformed sidecar — degrade to null, run page shows the rest */
+    }
+  }
+
+  const manifestPath = path.join(chatDir, "orchestrate-manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      const parsed = OrchestrateManifestSchema.safeParse(raw);
+      if (parsed.success) {
+        manifest = parsed.data;
+      }
+    } catch {
+      /* malformed sidecar — degrade to null */
+    }
+  }
+
+  return { auditItems, manifest };
+}
+
 export default async function RunPage({ params }: RunPageProps) {
   const { runId } = await params;
   const { chat, template } = await getRunData(runId);
@@ -212,6 +272,7 @@ export default async function RunPage({ params }: RunPageProps) {
   }
 
   const initialRounds = readChatRounds(chat.id);
+  const { auditItems, manifest } = readAuditAndManifest(chat.id);
 
   return (
     <AppShell>
@@ -225,6 +286,8 @@ export default async function RunPage({ params }: RunPageProps) {
         initialPrUrl={chat.prUrl}
         initialShipError={chat.shipError}
         initialVerdict={chat.verdict}
+        initialAuditItems={auditItems}
+        initialManifest={manifest}
       />
     </AppShell>
   );

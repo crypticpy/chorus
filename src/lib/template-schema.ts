@@ -332,6 +332,32 @@ export const AuditOutputSchema = z.object({
 export type AuditOutput = z.infer<typeof AuditOutputSchema>;
 
 /**
+ * Orchestrate phase manifest — written to `<chatDir>/orchestrate-manifest.json`
+ * once orchestrate finishes (or aborts). One entry per worker; the
+ * cockpit's diff-apply UI reads this to render Checkout / Open-PR
+ * actions per worker branch. Schema mirrors the in-memory shape from
+ * `src/daemon/phases/orchestrate.ts`.
+ */
+export const OrchestrateManifestEntrySchema = z.object({
+  idx: z.number().int().min(0),
+  itemId: z.string().min(1),
+  voiceId: z.string().min(1),
+  branch: z.string().min(1),
+  diffStat: z.string(),
+  status: z.enum(["completed", "failed"]),
+  error: z.string().optional(),
+});
+export type OrchestrateManifestEntry = z.infer<
+  typeof OrchestrateManifestEntrySchema
+>;
+
+export const OrchestrateManifestSchema = z.object({
+  workers: z.array(OrchestrateManifestEntrySchema),
+  completedAt: z.number().int(),
+});
+export type OrchestrateManifest = z.infer<typeof OrchestrateManifestSchema>;
+
+/**
  * Type guard: is this phase a review-only phase?
  *
  * Centralised so callers don't repeat the literal check. Also gives the

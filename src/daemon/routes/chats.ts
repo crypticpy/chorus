@@ -1,14 +1,37 @@
+import { execFile } from "child_process";
 import type { FastifyInstance } from "fastify";
 import fs from "fs";
 import path from "path";
+import { promisify } from "util";
 import yaml from "yaml";
 import { chats, phaseEvents, templates } from "../../lib/db/index.js";
 import { chatLogger, logger } from "../../lib/logger.js";
 import {
+  AuditOutputSchema,
+  OrchestrateManifestSchema,
   TemplateSchema,
   isReviewOnlyPhase,
   templateRequiresArtifact,
 } from "../../lib/template-schema.js";
+
+const execFileAsync = promisify(execFile);
+
+// Maps gh CLI failure modes to API error codes for the open-pr handler.
+// Mirrors the FAIL_TO_CODE pattern in chats-from-pr.ts so the cockpit can
+// show actionable guidance ("install gh", "run gh auth login") rather
+// than a generic 500.
+type OpenPrFailReason =
+  | "gh_not_installed"
+  | "gh_not_authed"
+  | "pr_create_failed";
+const OPEN_PR_FAIL_TO_CODE: Record<
+  OpenPrFailReason,
+  "validation" | "db_error"
+> = {
+  gh_not_installed: "validation",
+  gh_not_authed: "validation",
+  pr_create_failed: "db_error",
+};
 import {
   errorResponse,
   listEnvelope,
@@ -847,6 +870,434 @@ export function registerChatRoutes(
       });
 
       return successResponse(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
+    }
+  });
+
+  // GET /chats/:id/audit-items — read the persisted audit checklist.
+  // The cockpit's run page reads from disk directly during SSR, but
+  // exposing this lets us refactor toward client-side polling later.
+  // 404 when the file doesn't exist; 500 on parse failure.
+  fastify.get<{
+    Params: { id: string };
+    Reply: ApiResponse<object>;
+  }>("/chats/:id/audit-items", async (request, reply) => {
+    try {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
+        return sendError(reply, "validation", "invalid chat id");
+      }
+      const existing = await chats.getBySlugOrId(param);
+      if (!existing) {
+        return sendError(reply, "not_found", `Chat ${param} not found`);
+      }
+      const osModule = await import("os");
+      const auditPath = path.join(
+        osModule.homedir(),
+        ".chorus",
+        "chats",
+        existing.id,
+        "audit-output.json",
+      );
+      if (!fs.existsSync(auditPath)) {
+        return sendError(reply, "not_found", "audit-output.json not found");
+      }
+      let raw: unknown;
+      try {
+        raw = JSON.parse(fs.readFileSync(auditPath, "utf-8"));
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `cannot parse audit-output.json: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      // The on-disk shape is a superset of AuditOutputSchema (also carries
+      // `preset`, `phaseId`, `generatedAt` written by the audit phase).
+      // Validate the items[] portion via AuditOutputSchema and pass the
+      // metadata through unchanged.
+      const parsedItems = AuditOutputSchema.safeParse(raw);
+      if (!parsedItems.success) {
+        return sendError(
+          reply,
+          "validation",
+          "audit-output.json failed schema validation",
+        );
+      }
+      const meta = raw as {
+        preset?: unknown;
+        phaseId?: unknown;
+        generatedAt?: unknown;
+      };
+      return successResponse({
+        items: parsedItems.data.items,
+        preset: typeof meta.preset === "string" ? meta.preset : undefined,
+        phaseId: typeof meta.phaseId === "string" ? meta.phaseId : undefined,
+        generatedAt:
+          typeof meta.generatedAt === "number" ? meta.generatedAt : undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
+    }
+  });
+
+  // GET /chats/:id/orchestrate-manifest — read the persisted orchestrate
+  // manifest. Same disclaimer as audit-items: SSR reads from disk, but
+  // this endpoint exists so a future refactor can poll instead.
+  fastify.get<{
+    Params: { id: string };
+    Reply: ApiResponse<object>;
+  }>("/chats/:id/orchestrate-manifest", async (request, reply) => {
+    try {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
+        return sendError(reply, "validation", "invalid chat id");
+      }
+      const existing = await chats.getBySlugOrId(param);
+      if (!existing) {
+        return sendError(reply, "not_found", `Chat ${param} not found`);
+      }
+      const osModule = await import("os");
+      const manifestPath = path.join(
+        osModule.homedir(),
+        ".chorus",
+        "chats",
+        existing.id,
+        "orchestrate-manifest.json",
+      );
+      if (!fs.existsSync(manifestPath)) {
+        return sendError(
+          reply,
+          "not_found",
+          "orchestrate-manifest.json not found",
+        );
+      }
+      let raw: unknown;
+      try {
+        raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `cannot parse orchestrate-manifest.json: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const parsed = OrchestrateManifestSchema.safeParse(raw);
+      if (!parsed.success) {
+        return sendError(
+          reply,
+          "validation",
+          "orchestrate-manifest.json failed schema validation",
+        );
+      }
+      return successResponse(parsed.data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
+    }
+  });
+
+  // POST /chats/:id/workers/:idx/checkout — checkout the worker's branch
+  // in the chat's repo_path. Refuses on a dirty working tree (no
+  // `--force` flag) so the user has a chance to stash. Mirrors the
+  // ship-phase pattern of treating git as a black-box subprocess and
+  // surfacing structured failures.
+  fastify.post<{
+    Params: { id: string; idx: string };
+    Reply: ApiResponse<object>;
+  }>("/chats/:id/workers/:idx/checkout", async (request, reply) => {
+    try {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
+        return sendError(reply, "validation", "invalid chat id");
+      }
+      const idxRaw = request.params.idx;
+      if (!/^\d+$/.test(idxRaw)) {
+        return sendError(
+          reply,
+          "validation",
+          "idx must be a non-negative integer",
+        );
+      }
+      const idx = parseInt(idxRaw, 10);
+      if (idx > 999) {
+        return sendError(reply, "validation", "idx out of range (max 999)");
+      }
+      const existing = await chats.getBySlugOrId(param);
+      if (!existing) {
+        return sendError(reply, "not_found", `Chat ${param} not found`);
+      }
+      if (!existing.repo_path) {
+        return sendError(reply, "validation", "chat has no repo_path");
+      }
+      const osModule = await import("os");
+      const manifestPath = path.join(
+        osModule.homedir(),
+        ".chorus",
+        "chats",
+        existing.id,
+        "orchestrate-manifest.json",
+      );
+      if (!fs.existsSync(manifestPath)) {
+        return sendError(
+          reply,
+          "not_found",
+          "orchestrate-manifest.json not found",
+        );
+      }
+      let manifest: ReturnType<typeof OrchestrateManifestSchema.parse>;
+      try {
+        const raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        const parsed = OrchestrateManifestSchema.safeParse(raw);
+        if (!parsed.success) {
+          return sendError(
+            reply,
+            "validation",
+            "orchestrate-manifest.json failed schema validation",
+          );
+        }
+        manifest = parsed.data;
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `cannot read orchestrate-manifest.json: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const worker = manifest.workers[idx];
+      if (!worker) {
+        return sendError(
+          reply,
+          "not_found",
+          `worker idx ${idx} not in manifest`,
+        );
+      }
+      if (worker.status !== "completed") {
+        return sendError(
+          reply,
+          "validation",
+          `worker ${idx} is not completed (status=${worker.status})`,
+        );
+      }
+
+      const repoPath = existing.repo_path;
+      // Refuse on a dirty working tree — `git checkout` would otherwise
+      // either fail with confusing output or silently mix the user's
+      // staged work with the worker's branch state.
+      try {
+        const { stdout } = await execFileAsync(
+          "git",
+          ["status", "--porcelain"],
+          { cwd: repoPath },
+        );
+        if (stdout.trim().length > 0) {
+          return sendError(
+            reply,
+            "conflict",
+            "working tree is dirty; commit or stash before checkout",
+            { porcelain: stdout.trim().split("\n").slice(0, 20) },
+          );
+        }
+      } catch (err) {
+        return sendError(
+          reply,
+          "db_error",
+          `git status failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      try {
+        await execFileAsync("git", ["checkout", worker.branch], {
+          cwd: repoPath,
+        });
+      } catch (err) {
+        return sendError(
+          reply,
+          "db_error",
+          `git checkout failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      let head = "";
+      try {
+        const { stdout } = await execFileAsync(
+          "git",
+          ["rev-parse", "--short", "HEAD"],
+          { cwd: repoPath },
+        );
+        head = stdout.trim();
+      } catch {
+        /* informational; checkout already succeeded */
+      }
+
+      return successResponse({ ok: true, branch: worker.branch, head });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return errorResponse("db_error", message);
+    }
+  });
+
+  // POST /chats/:id/workers/:idx/open-pr — gh pr create against the
+  // worker's branch. Failure modes are bucketed (gh missing / not
+  // authed / create-failed) so the cockpit can show targeted copy.
+  fastify.post<{
+    Params: { id: string; idx: string };
+    Reply: ApiResponse<object>;
+  }>("/chats/:id/workers/:idx/open-pr", async (request, reply) => {
+    try {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
+        return sendError(reply, "validation", "invalid chat id");
+      }
+      const idxRaw = request.params.idx;
+      if (!/^\d+$/.test(idxRaw)) {
+        return sendError(
+          reply,
+          "validation",
+          "idx must be a non-negative integer",
+        );
+      }
+      const idx = parseInt(idxRaw, 10);
+      if (idx > 999) {
+        return sendError(reply, "validation", "idx out of range (max 999)");
+      }
+      const existing = await chats.getBySlugOrId(param);
+      if (!existing) {
+        return sendError(reply, "not_found", `Chat ${param} not found`);
+      }
+      if (!existing.repo_path) {
+        return sendError(reply, "validation", "chat has no repo_path");
+      }
+      const osModule = await import("os");
+      const manifestPath = path.join(
+        osModule.homedir(),
+        ".chorus",
+        "chats",
+        existing.id,
+        "orchestrate-manifest.json",
+      );
+      if (!fs.existsSync(manifestPath)) {
+        return sendError(
+          reply,
+          "not_found",
+          "orchestrate-manifest.json not found",
+        );
+      }
+      let manifest: ReturnType<typeof OrchestrateManifestSchema.parse>;
+      try {
+        const raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        const parsed = OrchestrateManifestSchema.safeParse(raw);
+        if (!parsed.success) {
+          return sendError(
+            reply,
+            "validation",
+            "orchestrate-manifest.json failed schema validation",
+          );
+        }
+        manifest = parsed.data;
+      } catch (err) {
+        return sendError(
+          reply,
+          "validation",
+          `cannot read orchestrate-manifest.json: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const worker = manifest.workers[idx];
+      if (!worker) {
+        return sendError(
+          reply,
+          "not_found",
+          `worker idx ${idx} not in manifest`,
+        );
+      }
+      if (worker.status !== "completed") {
+        return sendError(
+          reply,
+          "validation",
+          `worker ${idx} is not completed (status=${worker.status})`,
+        );
+      }
+
+      const repoPath = existing.repo_path;
+      const title = `chorus orchestrate worker-${worker.idx}: ${worker.itemId}`;
+      const body =
+        `Auto-opened by chorus from chat ${existing.id}, worker ${worker.idx}.\n\n` +
+        `Item: \`${worker.itemId}\`\n` +
+        `Voice: \`${worker.voiceId}\`\n` +
+        `Branch: \`${worker.branch}\`\n\n` +
+        (worker.diffStat ? `\`\`\`\n${worker.diffStat}\n\`\`\`\n` : "");
+
+      try {
+        const { stdout } = await execFileAsync(
+          "gh",
+          [
+            "pr",
+            "create",
+            "--head",
+            worker.branch,
+            "--title",
+            title,
+            "--body",
+            body,
+          ],
+          { cwd: repoPath },
+        );
+        // gh prints the PR URL on the last non-empty stdout line.
+        const lines = stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        const last = lines[lines.length - 1] ?? "";
+        const prUrl = last.startsWith("http") ? last : "";
+        if (!prUrl) {
+          return sendError(
+            reply,
+            OPEN_PR_FAIL_TO_CODE.pr_create_failed,
+            "gh pr create succeeded but no URL was emitted",
+            { stdout },
+          );
+        }
+        return successResponse({ ok: true, prUrl });
+      } catch (err) {
+        // Bucket the failure. errno-style codes from execFile (`ENOENT`)
+        // mean the binary is missing; gh's authn-required text appears
+        // on stderr. Anything else is a generic create failure.
+        const message = err instanceof Error ? err.message : String(err);
+        const stderr =
+          (err as { stderr?: string } | null)?.stderr?.toString() ?? "";
+        if (
+          (err as { code?: string } | null)?.code === "ENOENT" ||
+          /command not found/i.test(message) ||
+          /command not found/i.test(stderr)
+        ) {
+          return sendError(
+            reply,
+            OPEN_PR_FAIL_TO_CODE.gh_not_installed,
+            "gh CLI not installed",
+            { reason: "gh_not_installed" },
+          );
+        }
+        if (
+          /not logged in|gh auth login|authentication required/i.test(stderr) ||
+          /not logged in|gh auth login|authentication required/i.test(message)
+        ) {
+          return sendError(
+            reply,
+            OPEN_PR_FAIL_TO_CODE.gh_not_authed,
+            "gh CLI not authenticated; run `gh auth login`",
+            { reason: "gh_not_authed" },
+          );
+        }
+        return sendError(
+          reply,
+          OPEN_PR_FAIL_TO_CODE.pr_create_failed,
+          `gh pr create failed: ${stderr.trim() || message}`,
+          { reason: "pr_create_failed" },
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       return errorResponse("db_error", message);
