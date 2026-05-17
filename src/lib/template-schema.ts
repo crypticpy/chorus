@@ -58,6 +58,8 @@ const lineageEnum = z.enum([
   "opencode",
   "moonshot",
   "openrouter",
+  "local",
+  "grok",
   "any",
 ]);
 const reviewerLineageEnum = z.enum([
@@ -67,6 +69,8 @@ const reviewerLineageEnum = z.enum([
   "opencode",
   "moonshot",
   "openrouter",
+  "local",
+  "grok",
 ]);
 
 const ReviewerSchema = z

@@ -14,7 +14,15 @@ const VoiceRowSchema = z.object({
   source: z.enum(["cli", "api"]),
   provider: z.string(),
   model_id: z.string(),
-  lineage: z.enum(["anthropic", "openai", "google", "opencode", "moonshot"]),
+  lineage: z.enum([
+    "anthropic",
+    "openai",
+    "google",
+    "opencode",
+    "moonshot",
+    "grok",
+    "local",
+  ]),
   vendor_family: z.string().nullable(),
   input_cost_per_mtok: z.number().nullable(),
   output_cost_per_mtok: z.number().nullable(),
@@ -51,7 +59,14 @@ export interface VoiceUpsertInput {
   source: "cli" | "api";
   provider: string;
   model_id: string;
-  lineage: "anthropic" | "openai" | "google" | "opencode" | "moonshot";
+  lineage:
+    | "anthropic"
+    | "openai"
+    | "google"
+    | "opencode"
+    | "moonshot"
+    | "grok"
+    | "local";
   vendor_family?: string | null;
   input_cost_per_mtok?: number | null;
   output_cost_per_mtok?: number | null;

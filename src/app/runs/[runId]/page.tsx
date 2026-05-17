@@ -53,7 +53,14 @@ async function getRunData(runId: string) {
 
 const AGENT_TO_LINEAGE: Record<
   string,
-  "claude" | "codex" | "gemini" | "opencode" | "kimi" | "openrouter"
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "kimi"
+  | "openrouter"
+  | "grok"
+  | "local"
 > = {
   "claude-code": "claude",
   "codex-cli": "codex",
@@ -64,13 +71,27 @@ const AGENT_TO_LINEAGE: Record<
   // without this entry the lineage fell through to "claude" and rendered
   // OpenRouter answers with the wrong brand on the run page.
   openrouter: "openrouter",
+  // Grok shim emits agentName='grok-cli'; placeholder slots are
+  // synthesized with lineage='grok' (UI brand). Without this entry the
+  // real participant would render as an unbranded extra card.
+  "grok-cli": "grok",
+  // Local LLM HTTP shim uses agentName='local'.
+  local: "local",
 };
 
 interface ParticipantSnapshot {
   participant: string;
   role: "doer" | "reviewer";
   agentName: string;
-  lineage: "claude" | "codex" | "gemini" | "opencode" | "kimi" | "openrouter";
+  lineage:
+    | "claude"
+    | "codex"
+    | "gemini"
+    | "opencode"
+    | "kimi"
+    | "openrouter"
+    | "grok"
+    | "local";
   hasAnswer: boolean;
   answer?: string;
   findingsPreview?: string[];

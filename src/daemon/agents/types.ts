@@ -13,7 +13,16 @@
  * For now, treat `opencode` as "the OpenCode CLI" and let the user's opencode
  * config decide the underlying model. `moonshot` means the dedicated kimi CLI.
  */
-export type Lineage = 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot' | 'openrouter' | 'any';
+export type Lineage =
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "opencode"
+  | "moonshot"
+  | "openrouter"
+  | "local"
+  | "grok"
+  | "any";
 
 /**
  * Transport-aware sandbox modes (Codex CLI relevant; others ignore).
@@ -21,7 +30,7 @@ export type Lineage = 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot
  * - github: workspace-write + network (gh CLI calls work)
  * - tmux: workspace-write, no network (live pane only, no persistence)
  */
-export type Transport = 'folder' | 'github' | 'tmux';
+export type Transport = "folder" | "github" | "tmux";
 
 export interface AgentSpawnOptions {
   /** Stable id like `chat-<chatId>-<phaseId>-<role>-<agentName>`. */
@@ -41,7 +50,7 @@ export interface AgentSpawnOptions {
    * translates this into the right CLI flag(s). When unset, shims fall back
    * to their conservative default (workspace).
    */
-  sandbox?: 'strict' | 'workspace' | 'full';
+  sandbox?: "strict" | "workspace" | "full";
   /**
    * If true, shims emit auto-approval flags (kimi `--afk`, gemini auto-edit,
    * etc.) so the spawned reviewer doesn't hang on permission prompts.
@@ -151,7 +160,11 @@ export interface AgentShim {
    * Estimate per-call cost in USD. Used by /new cost preview. CLI-subscription
    * lineages return 0; API-keyed lineages use the rate card. Best-effort.
    */
-  estimateCostUsd(inputTokens: number, outputTokens: number, model?: string): number;
+  estimateCostUsd(
+    inputTokens: number,
+    outputTokens: number,
+    model?: string,
+  ): number;
 }
 
 /**
@@ -159,7 +172,7 @@ export interface AgentShim {
  * sending a per-CLI key sequence. Non-recoverable kinds (quota_exhausted,
  * auth_required, opencode_db_corrupt, etc.) stay as `cli_error` events.
  */
-export type RecoverableKind = 'permission_prompt';
+export type RecoverableKind = "permission_prompt";
 
 // ─── Headless transport (v0.5+) ─────────────────────────────────────────────
 //
@@ -183,12 +196,12 @@ export type RecoverableKind = 'permission_prompt';
  * emit only `progress` then `message_done`.
  */
 export type AgentEvent =
-  | { type: 'text_delta'; text: string }
-  | { type: 'tool_call_start'; tool: string; input?: unknown }
-  | { type: 'tool_call_end'; tool: string; ok: boolean }
-  | { type: 'progress'; elapsedMs: number }
+  | { type: "text_delta"; text: string }
+  | { type: "tool_call_start"; tool: string; input?: unknown }
+  | { type: "tool_call_end"; tool: string; ok: boolean }
+  | { type: "progress"; elapsedMs: number }
   | {
-      type: 'message_done';
+      type: "message_done";
       finalText: string;
       /**
        * Optional usage block extracted from the upstream stream-json's
@@ -216,7 +229,7 @@ export type AgentEvent =
         costUsd?: number;
       };
     }
-  | { type: 'error'; kind: string; message: string };
+  | { type: "error"; kind: string; message: string };
 
 /**
  * Options for `AgentShim.runHeadless`. Mirrors `AgentSpawnOptions` for the
@@ -239,7 +252,7 @@ export interface HeadlessSpawnOptions {
   /** Specific model; empty = CLI default. */
   model?: string;
   /** Sandbox profile from settings. */
-  sandbox?: 'strict' | 'workspace' | 'full';
+  sandbox?: "strict" | "workspace" | "full";
   /** Auto-approve in-CLI prompts. Headless mode usually auto-approves regardless. */
   autoApprove?: boolean;
   /** Allow outbound network. */

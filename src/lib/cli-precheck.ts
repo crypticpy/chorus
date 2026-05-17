@@ -84,6 +84,14 @@ const CRED_PATHS: Record<CliLineage, () => string[]> = {
   // the secrets table. The shim itself returns auth_missing when the
   // key is unset, which surfaces the same UX without a file probe.
   openrouter: () => [],
+  // Local LLM has no credential file — the base_url lives in the secrets
+  // table. The shim errors with auth_missing when base_url is unset.
+  local: () => [],
+  // Grok Build stores OIDC tokens in ~/.grok/auth.json (browser flow)
+  // or accepts GROK_CODE_XAI_API_KEY env. The env case is handled by
+  // the precheck-runtime override below; the file probe covers the
+  // common case where the user has run `grok login` interactively.
+  grok: () => [path.join(os.homedir(), ".grok", "auth.json")],
 };
 
 const LOGIN_HINT: Record<CliLineage, string> = {
@@ -94,6 +102,8 @@ const LOGIN_HINT: Record<CliLineage, string> = {
   moonshot:
     "Run `kimi` once interactively, or set up opencode if you use the kimi-via-opencode transport.",
   openrouter: "Save an OpenRouter API key on the Connect page.",
+  local: "Set a Local LLM base URL on the Connect page.",
+  grok: "Run `grok login` in a terminal, or set GROK_CODE_XAI_API_KEY (SuperGrok Heavy subscription required).",
 };
 
 /**
@@ -122,25 +132,31 @@ function hasCredFile(lineage: CliLineage): {
 
 /**
  * Claude Code v2.x stores its OAuth credentials in the macOS Keychain under
- * the service name `Claude Code-credentials` rather than on disk, so the
- * file-existence probe reports a false negative on freshly-logged-in
- * machines. Use the `security` CLI to confirm the keychain entry exists —
- * exit 0 = present, anything else = missing/keychain-locked.
+ * one of two service names depending on the auth flow (issue #38):
+ *   - `Claude Code-credentials` — Pro/Max OAuth via `claude login`
+ *   - `Claude Code` (no suffix) — API-key auth + some Console-account flows
+ * Either entry present means the user is authenticated; probe both.
  *
- * No-ops on non-darwin platforms (returns false). Bounded to ~1.5s so a
- * misconfigured keychain can't stall every spawn.
+ * No-ops on non-darwin platforms (returns false). Each probe bounded to ~1.5s
+ * so a misconfigured keychain can't stall every spawn. Short-circuits on
+ * first match.
  */
-function hasDarwinKeychainEntry(serviceName: string): boolean {
+function hasDarwinKeychainEntry(serviceName: string | string[]): boolean {
   if (process.platform !== "darwin") return false;
-  try {
-    execFileSync("security", ["find-generic-password", "-s", serviceName], {
-      stdio: "ignore",
-      timeout: 1500,
-    });
-    return true;
-  } catch {
-    return false;
+  const services =
+    typeof serviceName === "string" ? [serviceName] : serviceName;
+  for (const service of services) {
+    try {
+      execFileSync("security", ["find-generic-password", "-s", service], {
+        stdio: "ignore",
+        timeout: 1500,
+      });
+      return true;
+    } catch {
+      // try next candidate
+    }
   }
+  return false;
 }
 
 /**
@@ -197,9 +213,16 @@ export async function precheckLineage(
     // Stale health markers self-clear when a successful run records 'healthy'.
   }
 
-  // OpenRouter has no on-disk creds — the shim itself errors with
-  // auth_missing when the secrets-table key is absent. Skip the file probe.
-  if (lineage === "openrouter") {
+  // OpenRouter and local LLM have no on-disk creds — the shim itself errors
+  // with auth_missing when the secrets-table key/url is absent. Skip file probe.
+  if (lineage === "openrouter" || lineage === "local") {
+    return { ok: true };
+  }
+
+  // Grok: env-var auth (GROK_CODE_XAI_API_KEY) short-circuits the file probe.
+  // Without this, a user on CI with the env var set but no ~/.grok/auth.json
+  // would be marked auth_missing even though grok itself would work.
+  if (lineage === "grok" && process.env.GROK_CODE_XAI_API_KEY) {
     return { ok: true };
   }
 
@@ -212,7 +235,7 @@ export async function precheckLineage(
     // candidates empty even on a healthy machine.
     const keychainOk =
       lineage === "anthropic" &&
-      hasDarwinKeychainEntry("Claude Code-credentials");
+      hasDarwinKeychainEntry(["Claude Code-credentials", "Claude Code"]);
 
     if (!keychainOk) {
       return {
