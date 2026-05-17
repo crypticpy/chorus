@@ -23,6 +23,7 @@ import {
 import type { ErrorDetector } from "./error-detector.js";
 import { runAuditPhase } from "./phases/audit.js";
 import { runOrchestratePhase } from "./phases/orchestrate.js";
+import { runVerifyPhase } from "./phases/verify.js";
 import { runDoer } from "./runner/doer-driver.js";
 import { readPriorRoundFeedback } from "./runner/prior-round.js";
 import { runReviewers } from "./runner/reviewer-driver.js";
@@ -376,6 +377,63 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             phaseId: phase.id,
             phaseIdx,
             kind: phase.kind,
+          },
+          ts: Date.now(),
+        });
+        continue;
+      }
+
+      // Verify phase: no LLM doer — runs the project's `chorus.verify`
+      // command in repoPath, fences the output into a synthetic doer
+      // answer, then routes through the standard reviewer flow. Pairs
+      // with the TDD loop (re-prompt implement on failure).
+      if (phase.kind === "verify") {
+        if (!repoPath) {
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "verify",
+              reason: "missing_repo_path",
+              message:
+                "Verify phase requires a repoPath — chat was created without one.",
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
+        const verifyOutcome = await runVerifyPhase({
+          chatDir,
+          chatId,
+          phase,
+          phaseIdx,
+          work,
+          repoPath,
+          filesBlock,
+          tmuxMgr,
+          errorDetector,
+          onEvent,
+          abortSignal,
+          templateFallbackReviewer: template.fallback?.reviewer,
+        });
+        if (verifyOutcome.allReviewersFailed) {
+          anyPhaseAllReviewersFailed = true;
+        }
+        if (!verifyOutcome.completed) {
+          break;
+        }
+        onEvent({
+          chatId,
+          type: "phase_done",
+          payload: {
+            phaseId: phase.id,
+            phaseIdx,
+            kind: phase.kind,
+            passed: verifyOutcome.passed,
+            summary: verifyOutcome.summary,
           },
           ts: Date.now(),
         });

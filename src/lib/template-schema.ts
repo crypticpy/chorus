@@ -182,15 +182,7 @@ export type AuditPreset = (typeof AUDIT_PRESETS)[number];
  */
 const StandardPhaseSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum([
-    "plan",
-    "spec",
-    "tests",
-    "implement",
-    "review",
-    "verify",
-    "divergence",
-  ]),
+  kind: z.enum(["plan", "spec", "tests", "implement", "review", "divergence"]),
   title: z.string().min(1),
   description: z.string().optional(),
 
@@ -290,6 +282,43 @@ const AuditPhaseSchema = z.object({
 });
 
 /**
+ * Verify phase: no LLM doer — runs the project's `chorus.verify` command
+ * (from `package.json`) in `repoPath`, captures stdout/stderr/exit code,
+ * and feeds the captured output to a reviewer who judges pass/fail.
+ *
+ * Lets a template do "run the tests / typecheck / lint" without having to
+ * spin up a doer just to invoke `npm test`. Pairs with the TDD loop —
+ * verify failure surfaces a structured artifact the implement phase can
+ * be re-prompted with.
+ */
+const VerifyPhaseSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal("verify"),
+  title: z.string().min(1),
+  description: z.string().optional(),
+
+  reviewer: ReviewerSchema,
+
+  inputs: InputsSchema,
+
+  /** Reviewer wait budget (matches other phases). */
+  timeoutMs: PhaseTimeoutSchema,
+
+  /**
+   * Per-command wait budget for the verify subprocess itself. 30s floor
+   * catches typos; 30min ceiling lets slow CI-style suites finish without
+   * needing a custom config knob. Default 5 minutes covers typical
+   * `npm test` / `pnpm typecheck` runs.
+   */
+  commandTimeoutMs: z
+    .number()
+    .int()
+    .min(30_000)
+    .max(30 * 60 * 1000)
+    .default(5 * 60 * 1000),
+});
+
+/**
  * Orchestrate phase: fans the approved audit checklist out to multiple
  * worker voices, each on its own git branch under
  * `chorus/<chatId>/worker-<idx>`. Branch isolation keeps workers from
@@ -341,8 +370,8 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
   StandardPhaseSchema.extend({ kind: z.literal("tests") }),
   StandardPhaseSchema.extend({ kind: z.literal("implement") }),
   StandardPhaseSchema.extend({ kind: z.literal("review") }),
-  StandardPhaseSchema.extend({ kind: z.literal("verify") }),
   StandardPhaseSchema.extend({ kind: z.literal("divergence") }),
+  VerifyPhaseSchema,
   ReviewOnlyPhaseSchema,
   AuditPhaseSchema,
   OrchestratePhaseSchema,
@@ -350,11 +379,15 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
 
 export type Phase = z.infer<typeof PhaseSchema>;
 export type StandardPhase = z.infer<typeof StandardPhaseSchema> & {
-  kind: Exclude<Phase["kind"], "review_only" | "audit" | "orchestrate">;
+  kind: Exclude<
+    Phase["kind"],
+    "review_only" | "audit" | "orchestrate" | "verify"
+  >;
 };
 export type ReviewOnlyPhase = z.infer<typeof ReviewOnlyPhaseSchema>;
 export type AuditPhase = z.infer<typeof AuditPhaseSchema>;
 export type OrchestratePhase = z.infer<typeof OrchestratePhaseSchema>;
+export type VerifyPhase = z.infer<typeof VerifyPhaseSchema>;
 
 /**
  * Schema for a single audit checklist item produced by the audit phase

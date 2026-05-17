@@ -48,7 +48,8 @@ describe("PhaseSchema", () => {
       result.success &&
       result.data.kind !== "review_only" &&
       result.data.kind !== "audit" &&
-      result.data.kind !== "orchestrate"
+      result.data.kind !== "orchestrate" &&
+      result.data.kind !== "verify"
     ) {
       expect(result.data.doer.lineage).toBe("anthropic");
       // iterate gets a default
