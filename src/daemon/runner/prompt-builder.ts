@@ -21,6 +21,19 @@ import type { Phase } from "../../lib/template-schema.js";
 const ATTACHED_FILE_MAX_BYTES = 64 * 1024;
 const ATTACHED_FILES_TOTAL_BYTES = 256 * 1024;
 
+// Per-guide cap. AGENTS.md / CLAUDE.md are often modest but some projects
+// (this one included) approach 10KB. 16KB each leaves plenty of budget for
+// the rest of the prompt; oversized guides truncate with a marker so the
+// model knows the cut happened.
+const PROJECT_GUIDE_MAX_BYTES = 16 * 1024;
+
+// Files we consider "project guidelines" — checked in priority order. AGENTS.md
+// is the cross-tool de-facto standard (Claude Code, Cursor, Continue, etc.
+// all read it); CLAUDE.md is Anthropic-specific. We include both when both
+// exist so a project that runs Claude Code AND other tools doesn't get its
+// Claude-only nuance dropped.
+const PROJECT_GUIDE_FILES: ReadonlyArray<string> = ["AGENTS.md", "CLAUDE.md"];
+
 /**
  * Inline the contents of user-attached files into a single markdown block
  * the doer/reviewer can read directly. Drops files that:
@@ -169,6 +182,72 @@ function personaPromptBlock(systemPrompt: string | undefined): string {
   ].join("\n");
 }
 
+/**
+ * Read AGENTS.md / CLAUDE.md from the user's repo and pack them into an
+ * HTML-tagged block we can prepend to ask.md. Returns empty string when
+ * neither file exists or repoPath is unset.
+ *
+ * Tag fence rationale matches `personaPromptBlock`: project guides are
+ * user-edited markdown and would otherwise let `# heading` / `---` HRs /
+ * code fences bleed into the surrounding ask.md structure. We strip any
+ * literal `</project_guidelines>` to keep the closer un-fakeable.
+ *
+ * Each file is truncated to PROJECT_GUIDE_MAX_BYTES with a visible marker
+ * so the model knows the cut happened.
+ */
+export function readProjectGuides(repoPath: string | undefined): string {
+  if (!repoPath) return "";
+  const root = path.resolve(repoPath);
+  if (!fs.existsSync(root)) return "";
+
+  const sections: string[] = [];
+
+  for (const filename of PROJECT_GUIDE_FILES) {
+    const abs = path.join(root, filename);
+    if (!fs.existsSync(abs)) continue;
+
+    let body: string;
+    try {
+      // Symlink + non-regular-file guards mirror packAttachedFiles. A
+      // project shipping a CLAUDE.md → ../../etc/passwd symlink shouldn't
+      // leak the target into the prompt.
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(abs);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink() || !stat.isFile()) continue;
+      body = fs.readFileSync(abs, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (body.trim().length === 0) continue;
+
+    const truncated = body.length > PROJECT_GUIDE_MAX_BYTES;
+    const slice = truncated ? body.slice(0, PROJECT_GUIDE_MAX_BYTES) : body;
+    const sanitized = slice.replace(/<\/project_guidelines>/gi, "");
+
+    sections.push(
+      `### ${filename}${truncated ? ` (truncated to ${PROJECT_GUIDE_MAX_BYTES} bytes)` : ""}`,
+    );
+    sections.push(sanitized.trimEnd());
+    sections.push("");
+  }
+
+  if (sections.length === 0) return "";
+  return [
+    "<project_guidelines>",
+    "These are the project's own instructions for AI agents. Treat them as",
+    "binding context — they override your defaults when they conflict.",
+    "",
+    ...sections,
+    "</project_guidelines>",
+    "",
+  ].join("\n");
+}
+
 /** Build the doer ask.md prompt for one phase iteration. */
 export function buildAsk(
   phase: Phase,
@@ -179,12 +258,17 @@ export function buildAsk(
   filesBlock: string,
   personaSystemPrompt?: string,
   priorRoundFeedback?: string,
+  repoPath?: string,
 ): string {
   const lines: string[] = [];
 
   const personaBlock = personaPromptBlock(personaSystemPrompt);
   if (personaBlock) {
     lines.push(personaBlock);
+  }
+  const guidesBlock = readProjectGuides(repoPath);
+  if (guidesBlock) {
+    lines.push(guidesBlock);
   }
   lines.push(`# Chorus task — round ${round}, phase ${phase.id}`);
   lines.push("");
@@ -252,12 +336,17 @@ export function buildReviewerAsk(
   filesBlock: string,
   personaSystemPrompt?: string,
   slot?: ReviewerSlotIdentity,
+  repoPath?: string,
 ): string {
   const lines: string[] = [];
 
   const personaBlock = personaPromptBlock(personaSystemPrompt);
   if (personaBlock) {
     lines.push(personaBlock);
+  }
+  const guidesBlock = readProjectGuides(repoPath);
+  if (guidesBlock) {
+    lines.push(guidesBlock);
   }
   lines.push(`# Chorus review — round ${round}, phase ${phase.id}`);
   lines.push("");
