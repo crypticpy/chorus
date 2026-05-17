@@ -9,22 +9,23 @@
  * Read by: home-page CLI status panel via GET /cli/health.
  */
 
-import { settings } from './db';
+import { settings } from "./db";
 
 export type CliLineage =
-  | 'anthropic'
-  | 'openai'
-  | 'google'
-  | 'opencode'
-  | 'moonshot'
-  | 'openrouter';
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "opencode"
+  | "moonshot"
+  | "openrouter"
+  | "local";
 
 export type HealthStatus =
-  | 'healthy'
-  | 'quota_exhausted'
-  | 'auth_invalid'
-  | 'rate_limited'
-  | 'unknown';
+  | "healthy"
+  | "quota_exhausted"
+  | "auth_invalid"
+  | "rate_limited"
+  | "unknown";
 
 export interface CliHealth {
   lineage: CliLineage;
@@ -40,12 +41,13 @@ export interface CliHealth {
 const KEY = (l: CliLineage) => `cli_health.${l}`;
 
 const ALL_LINEAGES: CliLineage[] = [
-  'anthropic',
-  'openai',
-  'google',
-  'opencode',
-  'moonshot',
-  'openrouter',
+  "anthropic",
+  "openai",
+  "google",
+  "opencode",
+  "moonshot",
+  "openrouter",
+  "local",
 ];
 
 export async function recordHealth(input: {
@@ -66,12 +68,12 @@ export async function recordHealth(input: {
 
 export async function getHealth(lineage: CliLineage): Promise<CliHealth> {
   const raw = await settings.get(KEY(lineage));
-  if (raw && typeof raw === 'object' && 'status' in raw) {
+  if (raw && typeof raw === "object" && "status" in raw) {
     return raw as CliHealth;
   }
   return {
     lineage,
-    status: 'unknown',
+    status: "unknown",
     updatedAt: 0,
   };
 }
@@ -96,13 +98,13 @@ export async function clearStaleHealth(): Promise<CliLineage[]> {
   for (const lineage of ALL_LINEAGES) {
     const h = await getHealth(lineage);
     if (
-      h.status !== 'healthy' &&
-      h.status !== 'unknown' &&
-      typeof h.resetAt === 'number' &&
+      h.status !== "healthy" &&
+      h.status !== "unknown" &&
+      typeof h.resetAt === "number" &&
       h.resetAt > 0 &&
       h.resetAt <= now
     ) {
-      await recordHealth({ lineage, status: 'healthy' });
+      await recordHealth({ lineage, status: "healthy" });
       cleared.push(lineage);
     }
   }
@@ -115,13 +117,13 @@ export async function clearStaleHealth(): Promise<CliLineage[]> {
  */
 export function kindToStatus(kind: string): HealthStatus {
   switch (kind) {
-    case 'quota_exhausted':
-      return 'quota_exhausted';
-    case 'token_refresh_lost':
-    case 'mcp_handshake_failed':
-      return 'auth_invalid';
+    case "quota_exhausted":
+      return "quota_exhausted";
+    case "token_refresh_lost":
+    case "mcp_handshake_failed":
+      return "auth_invalid";
     default:
-      return 'unknown';
+      return "unknown";
   }
 }
 
@@ -142,49 +144,49 @@ export function classifyOpenRouterError(
   kind: string,
   message?: string,
 ): { status: HealthStatus; message: string; cta?: string } | null {
-  const m = (message ?? '').trim();
-  if (kind === 'auth_missing') {
+  const m = (message ?? "").trim();
+  if (kind === "auth_missing") {
     return {
-      status: 'auth_invalid',
-      message: 'No OpenRouter API key saved.',
-      cta: 'Add your key on the Connect page.',
+      status: "auth_invalid",
+      message: "No OpenRouter API key saved.",
+      cta: "Add your key on the Connect page.",
     };
   }
-  if (!kind.startsWith('openrouter_')) return null;
-  const statusCode = Number(kind.slice('openrouter_'.length));
+  if (!kind.startsWith("openrouter_")) return null;
+  const statusCode = Number(kind.slice("openrouter_".length));
   if (statusCode === 402) {
     return {
-      status: 'quota_exhausted',
-      message: m || 'OpenRouter account is out of credits.',
-      cta: 'Top up at openrouter.ai/credits.',
+      status: "quota_exhausted",
+      message: m || "OpenRouter account is out of credits.",
+      cta: "Top up at openrouter.ai/credits.",
     };
   }
   if (statusCode === 401 || statusCode === 403) {
     return {
-      status: 'auth_invalid',
-      message: m || 'OpenRouter rejected the API key.',
-      cta: 'Replace the key on the Connect page.',
+      status: "auth_invalid",
+      message: m || "OpenRouter rejected the API key.",
+      cta: "Replace the key on the Connect page.",
     };
   }
   if (statusCode === 429) {
     return {
-      status: 'rate_limited',
-      message: m || 'OpenRouter rate-limited the request.',
-      cta: 'Slow down or pick a higher-tier model.',
+      status: "rate_limited",
+      message: m || "OpenRouter rate-limited the request.",
+      cta: "Slow down or pick a higher-tier model.",
     };
   }
   if (statusCode === 404) {
     return {
-      status: 'unknown',
-      message: m || 'OpenRouter could not find the requested model.',
-      cta: 'Pick a different model on the Connect page.',
+      status: "unknown",
+      message: m || "OpenRouter could not find the requested model.",
+      cta: "Pick a different model on the Connect page.",
     };
   }
   if (statusCode >= 500 && statusCode < 600) {
     return {
-      status: 'rate_limited',
+      status: "rate_limited",
       message: m || `OpenRouter upstream error (${statusCode}).`,
-      cta: 'Try again in a moment.',
+      cta: "Try again in a moment.",
     };
   }
   return null;

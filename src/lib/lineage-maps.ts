@@ -17,7 +17,8 @@ export type DaemonLineage =
   | "openai"
   | "google"
   | "opencode"
-  | "moonshot";
+  | "moonshot"
+  | "local";
 
 export const LINEAGE_LABEL: Record<DaemonLineage, string> = {
   anthropic: "Claude",
@@ -25,6 +26,7 @@ export const LINEAGE_LABEL: Record<DaemonLineage, string> = {
   google: "Gemini",
   opencode: "OpenCode",
   moonshot: "Kimi",
+  local: "Local LLM",
 };
 
 /** Tailwind background colour class for the small lineage dot indicator. */
@@ -34,6 +36,7 @@ const LINEAGE_DOT: Record<DaemonLineage, string> = {
   google: "bg-blue-400",
   opencode: "bg-emerald-400",
   moonshot: "bg-pink-400",
+  local: "bg-teal-400",
 };
 
 /** Returns the human label for a lineage, falling back to the raw key. */
@@ -60,7 +63,8 @@ export type UILineage =
   | "gemini"
   | "opencode"
   | "kimi"
-  | "openrouter";
+  | "openrouter"
+  | "local";
 
 export const UI_LINEAGE_LABEL: Record<UILineage, string> = {
   claude: "Claude",
@@ -74,6 +78,9 @@ export const UI_LINEAGE_LABEL: Record<UILineage, string> = {
   // the runner creates `reviewer-openrouter-N` dirs regardless of the
   // underlying model.
   openrouter: "OpenRouter",
+  // Local inference — any OpenAI-compatible endpoint (Ollama, llama-swap,
+  // LM Studio, vLLM). Base URL configured via Settings → Local LLM.
+  local: "Local LLM",
 };
 
 const UI_LINEAGE_DOT: Record<UILineage, string> = {
@@ -86,6 +93,9 @@ const UI_LINEAGE_DOT: Record<UILineage, string> = {
   // convention, which clashed with lineage-as-brand semantics. Cyan is
   // brand-distinct without state ambiguity.
   openrouter: "bg-cyan-400",
+  // Teal distinguishes local from openrouter (cyan) while staying in the
+  // same cool-green family — both are "non-cloud" HTTP-dispatched voices.
+  local: "bg-teal-400",
 };
 
 export function uiLineageLabel(lineage: string | undefined): string {
@@ -114,6 +124,8 @@ export const UI_LINEAGE_DEFAULT_MODEL: Record<UILineage, string> = {
   // Empty string lets `models?.[0] ?? defaultModel` resolve to "" which
   // the run page treats as "no model" (skips the · model · separator).
   openrouter: "",
+  // No default for local either — model IDs are endpoint-specific.
+  local: "",
 };
 
 /**
@@ -134,56 +146,49 @@ export const UI_LINEAGE_DEFAULT_MODEL: Record<UILineage, string> = {
  * `opencode models` (gateway-aware). Cursor/Windsurf are IDE
  * orchestrators with no model selection of their own.
  */
-export const UI_LINEAGE_AVAILABLE_MODELS: Partial<Record<UILineage, string[]>> = {
-  claude: [
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-    "claude-opus-4-5",
-  ],
-  codex: [
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex",
-    "gpt-5.2",
-  ],
-  // Gemini list verified 2026-05-04 by `gemini -p "ok" --model <X>`.
-  // gemini-2.5-pro is the universally-available default — gemini-3.1-pro-preview
-  // is gated behind a preview-access tier and 404s on most accounts (the
-  // failure mode that surfaced as "Reviewer · GEMINI failed → cross-lineage
-  // fallback" in dogfood). 2.5-pro works on every gemini-cli account we've
-  // tested. Users with preview access can switch via the model dropdown.
-  gemini: [
-    "gemini-2.5-pro",
-    "gemini-3.1-pro-preview",
-    "gemini-2.5-flash",
-  ],
-  // Kimi list cross-checked against the official kimi-cli docs +
-  // source (2026-05-04):
-  //   - CHANGELOG.md: kimi-k2.6, kimi-k2-thinking
-  //   - klips/klip-6: kimi-k2-thinking-turbo (recommended turbo flagship)
-  //   - sdks/kimi-sdk/README.md, klips/klip-7: kimi-k2-turbo-preview
-  //   - Welcome screen dropped hardcoded kimi-k2.5, but it still works
-  // Not end-to-end probed because the dedicated kimi CLI needs a
-  // separate Moonshot account login; cross-referenced from official docs
-  // is the next-best signal.
-  // Index 0 must match UI_LINEAGE_DEFAULT_MODEL.kimi to keep the seed's
-  // immutable provider row pointed at the same default. kimi-k2.6 has
-  // been the chorus default since v0.7; not auto-rotating to the
-  // turbo-thinking variant here so existing installs don't silently
-  // change behavior. Users can still toggle the turbo entries on.
-  kimi: [
-    "kimi-k2.6",
-    "kimi-k2-thinking-turbo",
-    "kimi-k2-turbo-preview",
-    "kimi-k2-thinking",
-    "kimi-k2.5",
-  ],
-};
+export const UI_LINEAGE_AVAILABLE_MODELS: Partial<Record<UILineage, string[]>> =
+  {
+    claude: [
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-5",
+    ],
+    codex: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"],
+    // Gemini list verified 2026-05-04 by `gemini -p "ok" --model <X>`.
+    // gemini-2.5-pro is the universally-available default — gemini-3.1-pro-preview
+    // is gated behind a preview-access tier and 404s on most accounts (the
+    // failure mode that surfaced as "Reviewer · GEMINI failed → cross-lineage
+    // fallback" in dogfood). 2.5-pro works on every gemini-cli account we've
+    // tested. Users with preview access can switch via the model dropdown.
+    gemini: ["gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-2.5-flash"],
+    // Kimi list cross-checked against the official kimi-cli docs +
+    // source (2026-05-04):
+    //   - CHANGELOG.md: kimi-k2.6, kimi-k2-thinking
+    //   - klips/klip-6: kimi-k2-thinking-turbo (recommended turbo flagship)
+    //   - sdks/kimi-sdk/README.md, klips/klip-7: kimi-k2-turbo-preview
+    //   - Welcome screen dropped hardcoded kimi-k2.5, but it still works
+    // Not end-to-end probed because the dedicated kimi CLI needs a
+    // separate Moonshot account login; cross-referenced from official docs
+    // is the next-best signal.
+    // Index 0 must match UI_LINEAGE_DEFAULT_MODEL.kimi to keep the seed's
+    // immutable provider row pointed at the same default. kimi-k2.6 has
+    // been the chorus default since v0.7; not auto-rotating to the
+    // turbo-thinking variant here so existing installs don't silently
+    // change behavior. Users can still toggle the turbo entries on.
+    kimi: [
+      "kimi-k2.6",
+      "kimi-k2-thinking-turbo",
+      "kimi-k2-turbo-preview",
+      "kimi-k2-thinking",
+      "kimi-k2.5",
+    ],
+  };
 
-export function uiLineageDefaultModel(lineage: string | undefined): string | undefined {
+export function uiLineageDefaultModel(
+  lineage: string | undefined,
+): string | undefined {
   if (!lineage) return undefined;
   return UI_LINEAGE_DEFAULT_MODEL[lineage as UILineage];
 }
@@ -233,5 +238,9 @@ export const UI_LINEAGE_BRAND: Record<UILineage, LineageBrand> = {
     ring: "ring-cyan-400/40",
     gradient: "bg-gradient-to-b from-cyan-500/15 to-card",
   },
+  local: {
+    dot: "bg-teal-400",
+    ring: "ring-teal-400/40",
+    gradient: "bg-gradient-to-b from-teal-500/15 to-card",
+  },
 };
-
