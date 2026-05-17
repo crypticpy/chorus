@@ -204,6 +204,12 @@ async function initDb(): Promise<Client> {
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_voices_source ON voices(source)",
   );
+  // Speeds up `WHERE enabled = 0` scans used by `chorus diagnose` voice
+  // health summary. Tiny table today (<200 rows) so the index is mostly
+  // forward-looking, but cheap.
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_voices_enabled ON voices(enabled)",
+  );
 
   // disabled_reason — added so the seed can distinguish user-intent toggles
   // from transient auto-disables on missed CLI detection. Without this the
