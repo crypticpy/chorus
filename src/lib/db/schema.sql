@@ -150,8 +150,56 @@ CREATE TABLE IF NOT EXISTS voices (
   updated_at INTEGER NOT NULL
 );
 
+-- PR babysit jobs: one row per (repo, pr_number) under autonomous review.
+-- Lifecycle states drive the babysit state machine (docs/pr-babysit-design.md):
+-- idle → judging → fixing/replying → verifying → pushing → quiet_check →
+-- merged | escalated. webhook events look up jobs by (repo, pr_number).
+CREATE TABLE IF NOT EXISTS babysit_jobs (
+  id TEXT PRIMARY KEY,                 -- "<owner>/<repo>#<number>"
+  repo TEXT NOT NULL,                  -- "<owner>/<repo>"
+  pr_number INTEGER NOT NULL,
+  installation_id INTEGER,             -- GH App installation id; NULL for gh-CLI-only mode
+  state TEXT NOT NULL,                 -- idle|judging|fixing|verifying|pushing|waiting|quiet_check|escalated|merged|paused
+  worktree_path TEXT,                  -- absolute path to per-PR worktree (NULL if not yet checked out)
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  fix_commits INTEGER NOT NULL DEFAULT 0,
+  total_judge_calls INTEGER NOT NULL DEFAULT 0,
+  total_fix_calls INTEGER NOT NULL DEFAULT 0,
+  total_tokens_in INTEGER NOT NULL DEFAULT 0,
+  total_tokens_out INTEGER NOT NULL DEFAULT 0,
+  escalation_reason TEXT,
+  UNIQUE (repo, pr_number)
+);
+
+-- Audit trail: every judge decision recorded so we can train the prompt later
+-- and surface a per-PR "why we did what we did" timeline in cockpit.
+CREATE TABLE IF NOT EXISTS babysit_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL REFERENCES babysit_jobs(id),
+  decided_at INTEGER NOT NULL,
+  comment_id INTEGER NOT NULL,         -- GH comment id (numeric)
+  comment_author TEXT NOT NULL,
+  comment_hash TEXT NOT NULL,          -- sha256(body) — dedup + per-comment attempt count
+  bot TEXT,                            -- "coderabbit"|"sourcery"|"greptile"|"chatgpt-codex"|NULL for human
+  validity TEXT NOT NULL,              -- valid|invalid|partially_valid|unsure
+  category TEXT NOT NULL,              -- apply-trivial|apply-targeted|apply-architectural|reply-disagree|reply-ack|defer-to-human
+  confidence REAL NOT NULL,            -- 0..1; below threshold escalates
+  judge_model TEXT NOT NULL,
+  shadow_judge_model TEXT,             -- nullable; populated when shadow sample fires
+  shadow_validity TEXT,
+  shadow_disagreed INTEGER NOT NULL DEFAULT 0,
+  fix_model TEXT,                      -- nullable; NULL for reply-* / defer categories
+  outcome TEXT,                        -- "fixed"|"replied"|"verify_failed"|"escalated"|NULL while in-flight
+  outcome_commit TEXT                  -- sha; only set when outcome=fixed
+);
+
 CREATE INDEX IF NOT EXISTS idx_chats_status ON chats(status);
 CREATE INDEX IF NOT EXISTS idx_phase_events_chat ON phase_events(chat_id, phase_idx);
+CREATE INDEX IF NOT EXISTS idx_babysit_jobs_state ON babysit_jobs(state);
+CREATE INDEX IF NOT EXISTS idx_babysit_decisions_job ON babysit_decisions(job_id, decided_at);
+CREATE INDEX IF NOT EXISTS idx_babysit_decisions_hash ON babysit_decisions(job_id, comment_hash);
 CREATE INDEX IF NOT EXISTS idx_voices_lineage ON voices(lineage);
 CREATE INDEX IF NOT EXISTS idx_voices_provider ON voices(provider);
 CREATE INDEX IF NOT EXISTS idx_voices_source ON voices(source);
