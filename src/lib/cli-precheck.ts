@@ -132,25 +132,31 @@ function hasCredFile(lineage: CliLineage): {
 
 /**
  * Claude Code v2.x stores its OAuth credentials in the macOS Keychain under
- * the service name `Claude Code-credentials` rather than on disk, so the
- * file-existence probe reports a false negative on freshly-logged-in
- * machines. Use the `security` CLI to confirm the keychain entry exists —
- * exit 0 = present, anything else = missing/keychain-locked.
+ * one of two service names depending on the auth flow (issue #38):
+ *   - `Claude Code-credentials` — Pro/Max OAuth via `claude login`
+ *   - `Claude Code` (no suffix) — API-key auth + some Console-account flows
+ * Either entry present means the user is authenticated; probe both.
  *
- * No-ops on non-darwin platforms (returns false). Bounded to ~1.5s so a
- * misconfigured keychain can't stall every spawn.
+ * No-ops on non-darwin platforms (returns false). Each probe bounded to ~1.5s
+ * so a misconfigured keychain can't stall every spawn. Short-circuits on
+ * first match.
  */
-function hasDarwinKeychainEntry(serviceName: string): boolean {
+function hasDarwinKeychainEntry(serviceName: string | string[]): boolean {
   if (process.platform !== "darwin") return false;
-  try {
-    execFileSync("security", ["find-generic-password", "-s", serviceName], {
-      stdio: "ignore",
-      timeout: 1500,
-    });
-    return true;
-  } catch {
-    return false;
+  const services =
+    typeof serviceName === "string" ? [serviceName] : serviceName;
+  for (const service of services) {
+    try {
+      execFileSync("security", ["find-generic-password", "-s", service], {
+        stdio: "ignore",
+        timeout: 1500,
+      });
+      return true;
+    } catch {
+      // try next candidate
+    }
   }
+  return false;
 }
 
 /**
@@ -229,7 +235,7 @@ export async function precheckLineage(
     // candidates empty even on a healthy machine.
     const keychainOk =
       lineage === "anthropic" &&
-      hasDarwinKeychainEntry("Claude Code-credentials");
+      hasDarwinKeychainEntry(["Claude Code-credentials", "Claude Code"]);
 
     if (!keychainOk) {
       return {

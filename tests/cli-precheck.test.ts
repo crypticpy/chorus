@@ -235,9 +235,58 @@ describe("precheckLineage", () => {
       expect(result.ok).toBe(false);
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });
+
+    // Claude Code v2.x writes OAuth creds under two service names depending
+    // on auth flow: `Claude Code-credentials` for Pro/Max OAuth, and `Claude
+    // Code` (no suffix) for API-key + some Console-account flows. The
+    // single-service probe regressed to auth_missing for the API-key flow.
+    // Upstream issue #38.
+    it("falls back to 'Claude Code' service when 'Claude Code-credentials' is absent", async () => {
+      // First call (Claude Code-credentials) throws, second (Claude Code) succeeds.
+      mockExecFileSync
+        .mockImplementationOnce(() => {
+          throw new Error("no entry");
+        })
+        .mockReturnValueOnce(Buffer.from(""));
+
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+      expect(mockExecFileSync).toHaveBeenNthCalledWith(
+        1,
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials"],
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+      expect(mockExecFileSync).toHaveBeenNthCalledWith(
+        2,
+        "security",
+        ["find-generic-password", "-s", "Claude Code"],
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+    });
+
+    it("short-circuits on first matching service (no second probe)", async () => {
+      // First service ("Claude Code-credentials") succeeds → second probe
+      // must not run, otherwise we'd pay the `security` shell-out cost
+      // twice on every healthy spawn.
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(""));
+
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails only when both keychain services are absent", async () => {
+      // Default mock throws on every call → both probes fail → auth_missing.
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(false);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+      if (!result.ok) expect(result.reason).toBe("auth_missing");
+    });
   });
 
-  describe('grok env-var auth (GROK_CODE_XAI_API_KEY)', () => {
+  describe("grok env-var auth (GROK_CODE_XAI_API_KEY)", () => {
     let savedKey: string | undefined;
 
     beforeEach(() => {
@@ -249,29 +298,29 @@ describe("precheckLineage", () => {
       else process.env.GROK_CODE_XAI_API_KEY = savedKey;
     });
 
-    it('returns ok when GROK_CODE_XAI_API_KEY is set even without ~/.grok/auth.json', async () => {
+    it("returns ok when GROK_CODE_XAI_API_KEY is set even without ~/.grok/auth.json", async () => {
       // No auth.json on disk — would normally fail. The env var short-
       // circuits the file probe so users on CI (where grok login can't
       // run interactively) still pass precheck.
-      process.env.GROK_CODE_XAI_API_KEY = 'xai-test-key';
-      const result = await precheckLineage('grok');
+      process.env.GROK_CODE_XAI_API_KEY = "xai-test-key";
+      const result = await precheckLineage("grok");
       expect(result.ok).toBe(true);
     });
 
-    it('falls back to file probe when env var is unset', async () => {
+    it("falls back to file probe when env var is unset", async () => {
       delete process.env.GROK_CODE_XAI_API_KEY;
-      const result = await precheckLineage('grok');
+      const result = await precheckLineage("grok");
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.reason).toBe('auth_missing');
+        expect(result.reason).toBe("auth_missing");
         expect(result.cta).toMatch(/grok login|GROK_CODE_XAI_API_KEY/);
       }
     });
 
-    it('passes precheck when ~/.grok/auth.json exists even without env var', async () => {
+    it("passes precheck when ~/.grok/auth.json exists even without env var", async () => {
       delete process.env.GROK_CODE_XAI_API_KEY;
-      writeFakeCred('.grok/auth.json');
-      const result = await precheckLineage('grok');
+      writeFakeCred(".grok/auth.json");
+      const result = await precheckLineage("grok");
       expect(result.ok).toBe(true);
     });
   });
