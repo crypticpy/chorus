@@ -25,28 +25,28 @@ import type {
   AgentNudgeOptions,
   HeadlessSpawnOptions,
   AgentEvent,
-} from './types.js';
-import { secrets } from '../../lib/db/index.js';
-import { recordHealth } from '../../lib/cli-health.js';
-import { parseOpenRouterSSE } from './parsers/index.js';
+} from "./types.js";
+import { secrets } from "../../lib/db/index.js";
+import { recordHealth } from "../../lib/cli-health.js";
+import { parseOpenRouterSSE } from "./parsers/index.js";
 
-const DEFAULT_BASE = 'http://127.0.0.1:11434/v1';
+const DEFAULT_BASE = "http://127.0.0.1:11434/v1";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const localShim: AgentShim = {
-  lineage: 'local',
-  name: 'local',
+  lineage: "local",
+  name: "local",
 
   buildLaunchCommand(_opts: AgentSpawnOptions): string {
     throw new Error(
-      'localShim has no tmux launch path — runner must use runHeadless',
+      "localShim has no tmux launch path — runner must use runHeadless",
     );
   },
 
   formatPrompt(_opts: AgentNudgeOptions): string {
     throw new Error(
-      'localShim does not use file-based prompt nudging — runHeadless ' +
-        'passes promptText into the request body directly',
+      "localShim does not use file-based prompt nudging — runHeadless " +
+        "passes promptText into the request body directly",
     );
   },
 
@@ -62,7 +62,7 @@ export const localShim: AgentShim = {
 async function* runLocalStream(
   opts: HeadlessSpawnOptions,
 ): AsyncIterable<AgentEvent> {
-  const stored = await secrets.get('local');
+  const stored = await secrets.get("local");
   // Guard JSON.parse — a malformed secret (truncated write, manual edit)
   // would otherwise throw synchronously inside the async generator and
   // surface as an opaque "threw" with no structured event in the run log.
@@ -71,47 +71,66 @@ async function* runLocalStream(
   let config: { base_url?: string; api_key?: string } = {};
   if (stored) {
     try {
-      config = JSON.parse(stored.value) as { base_url?: string; api_key?: string };
+      config = JSON.parse(stored.value) as {
+        base_url?: string;
+        api_key?: string;
+      };
     } catch {
       yield {
-        type: 'error',
-        kind: 'config_parse',
+        type: "error",
+        kind: "config_parse",
         message:
-          'Local LLM secret is not valid JSON. Re-save the endpoint on Settings → Local LLM.',
+          "Local LLM secret is not valid JSON. Re-save the endpoint on Settings → Local LLM.",
       };
       return;
     }
   }
-  const base = config.base_url ?? DEFAULT_BASE;
-  const apiKey = config.api_key ?? '';
+  // Treat an empty / whitespace-only base_url as unset and fall back to
+  // DEFAULT_BASE — `??` alone would pass `""` through to fetch() and the
+  // user would see an opaque "Failed to fetch" instead of the Ollama
+  // default working out of the box. Strip trailing slashes so we don't
+  // build `//chat/completions`.
+  const base = (config.base_url?.trim() || DEFAULT_BASE).replace(/\/+$/, "");
+  const apiKey = config.api_key ?? "";
 
   const rawModel = opts.model;
   if (!rawModel) {
-    yield { type: 'error', kind: 'validation', message: 'Local dispatch requires an explicit model — none supplied.' };
+    yield {
+      type: "error",
+      kind: "validation",
+      message: "Local dispatch requires an explicit model — none supplied.",
+    };
     return;
   }
-  const model = rawModel.startsWith('local:') ? rawModel.slice('local:'.length) : rawModel;
+  const model = rawModel.startsWith("local:")
+    ? rawModel.slice("local:".length)
+    : rawModel;
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutCtl = new AbortController();
-  const timeoutHandle = setTimeout(() => timeoutCtl.abort('timeout'), timeoutMs);
+  const timeoutHandle = setTimeout(
+    () => timeoutCtl.abort("timeout"),
+    timeoutMs,
+  );
   const signals: AbortSignal[] = [timeoutCtl.signal];
   if (opts.abortSignal) signals.push(opts.abortSignal);
   const composed = AbortSignal.any(signals);
 
-  let accumulated = '';
+  let accumulated = "";
   let finishedNaturally = false;
 
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     const res = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
+      method: "POST",
       headers,
       body: JSON.stringify({
         model,
-        messages: [{ role: 'user', content: opts.promptText }],
+        messages: [{ role: "user", content: opts.promptText }],
         stream: true,
       }),
       signal: composed,
@@ -119,26 +138,69 @@ async function* runLocalStream(
 
     if (!res.ok) {
       let errMessage = `Local endpoint returned ${res.status}`;
-      let rawBody = '';
+      let rawBody = "";
       try {
         rawBody = await res.text();
         const parsed = JSON.parse(rawBody) as { error?: { message?: string } };
         if (parsed.error?.message) errMessage = parsed.error.message;
-        else if (rawBody.length > 0 && rawBody.length < 500) errMessage = rawBody;
-      } catch { /* keep status-code message */ }
-      console.warn(`[local] dispatch failed model=${model} status=${res.status} message=${errMessage}`);
-      yield { type: 'error', kind: `local_${res.status}`, message: errMessage };
+        else if (rawBody.length > 0 && rawBody.length < 500)
+          errMessage = rawBody;
+      } catch {
+        /* keep status-code message */
+      }
+      console.warn(
+        `[local] dispatch failed model=${model} status=${res.status} message=${errMessage}`,
+      );
+      yield { type: "error", kind: `local_${res.status}`, message: errMessage };
       return;
     }
 
     if (!res.body) {
-      yield { type: 'error', kind: 'local_no_body', message: 'Local response had no body.' };
+      yield {
+        type: "error",
+        kind: "local_no_body",
+        message: "Local response had no body.",
+      };
       return;
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = "";
+
+    // Drains a complete SSE event payload. Hoisted so the post-loop
+    // residual-buffer flush can share the same dispatch logic. Yields
+    // each derived AgentEvent and returns true if a terminal `error`
+    // event was emitted (caller should stop reading).
+    const dispatchPayload = function* (
+      payload: string,
+    ): Generator<AgentEvent, boolean> {
+      if (payload.length === 0) return false;
+      for (const ev of parseOpenRouterSSE(payload)) {
+        if (ev.type === "text_delta") {
+          accumulated += ev.text;
+          yield ev;
+        } else if (ev.type === "message_done") {
+          // Usage-bearing chunk — swallow, emit consolidated message_done at end.
+        } else if (ev.type === "error") {
+          yield ev;
+          return true;
+        } else {
+          yield ev;
+        }
+      }
+      return false;
+    };
+
+    const extractPayload = (rawEvent: string): string => {
+      const dataLines = rawEvent
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice("data:".length).replace(/^ /, ""));
+      return dataLines.join("\n");
+    };
+
+    let terminalErr = false;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -148,42 +210,62 @@ async function* runLocalStream(
       let boundary: number;
       while ((boundary = findEventBoundary(buffer)) !== -1) {
         const rawEvent = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary).replace(/^[\r\n]+/, '');
-
-        const dataLines = rawEvent
-          .split('\n')
-          .filter((l) => l.startsWith('data:'))
-          .map((l) => l.slice('data:'.length).replace(/^ /, ''));
-        const payload = dataLines.join('\n');
-        if (payload.length === 0) continue;
-
-        for (const ev of parseOpenRouterSSE(payload)) {
-          if (ev.type === 'text_delta') {
-            accumulated += ev.text;
-            yield ev;
-          } else if (ev.type === 'message_done') {
-            // Usage-bearing chunk — swallow, emit consolidated message_done at end.
-          } else if (ev.type === 'error') {
-            yield ev;
-            return;
-          } else {
-            yield ev;
-          }
+        buffer = buffer.slice(boundary).replace(/^[\r\n]+/, "");
+        const payload = extractPayload(rawEvent);
+        const gen = dispatchPayload(payload);
+        let next = gen.next();
+        while (!next.done) {
+          yield next.value;
+          next = gen.next();
+        }
+        if (next.value) {
+          terminalErr = true;
+          break;
         }
       }
+      if (terminalErr) return;
+    }
+
+    // Some OpenAI-compatible servers (notably older Ollama builds and
+    // some vLLM configs) close the stream without a trailing `\n\n`
+    // delimiter. Without this flush the last partial event — often the
+    // final text_delta containing real output — silently disappears and
+    // the doer/reviewer ships a truncated answer.
+    if (buffer.trim().length > 0) {
+      const payload = extractPayload(buffer);
+      const gen = dispatchPayload(payload);
+      let next = gen.next();
+      while (!next.done) {
+        yield next.value;
+        next = gen.next();
+      }
+      if (next.value) return;
+      buffer = "";
     }
 
     finishedNaturally = true;
   } catch (err) {
     const aborted = composed.aborted;
     const reason = composed.aborted ? composed.reason : undefined;
-    if (aborted && reason === 'timeout') {
-      yield { type: 'error', kind: 'timeout', message: `Local dispatch exceeded ${Math.round(timeoutMs / 1000)}s.` };
+    if (aborted && reason === "timeout") {
+      yield {
+        type: "error",
+        kind: "timeout",
+        message: `Local dispatch exceeded ${Math.round(timeoutMs / 1000)}s.`,
+      };
     } else if (aborted) {
-      yield { type: 'error', kind: 'aborted', message: 'Local dispatch was cancelled.' };
+      yield {
+        type: "error",
+        kind: "aborted",
+        message: "Local dispatch was cancelled.",
+      };
     } else {
       const message = err instanceof Error ? err.message : String(err);
-      yield { type: 'error', kind: 'local_fetch_failed', message: `Network error: ${message}` };
+      yield {
+        type: "error",
+        kind: "local_fetch_failed",
+        message: `Network error: ${message}`,
+      };
     }
     return;
   } finally {
@@ -191,14 +273,14 @@ async function* runLocalStream(
   }
 
   if (finishedNaturally) {
-    recordHealth({ lineage: 'local', status: 'healthy' }).catch(() => {});
-    yield { type: 'message_done', finalText: accumulated };
+    recordHealth({ lineage: "local", status: "healthy" }).catch(() => {});
+    yield { type: "message_done", finalText: accumulated };
   }
 }
 
 function findEventBoundary(buf: string): number {
-  const lf = buf.indexOf('\n\n');
-  const crlf = buf.indexOf('\r\n\r\n');
+  const lf = buf.indexOf("\n\n");
+  const crlf = buf.indexOf("\r\n\r\n");
   if (lf === -1) return crlf;
   if (crlf === -1) return lf;
   return Math.min(lf, crlf);

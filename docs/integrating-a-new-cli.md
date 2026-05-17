@@ -1,18 +1,18 @@
 # Integrating a new CLI into Chorus
 
-This is the checklist for adding a CLI to Chorus's detection, onboarding, and (optionally) reviewer-dispatch surfaces. Written 2026-05-15 from real integration experience adding **Grok Build** (xAI, detection-only) on top of the existing 5-CLI fleet (Claude Code, Codex, Gemini, OpenCode, Kimi).
+This is the checklist for adding a CLI to Chorus's detection, onboarding, and (optionally) reviewer-dispatch surfaces. Written 2026-05-15 from real integration experience adding **Grok Build** (xAI, full reviewer / level 3) on top of the existing 5-CLI fleet (Claude Code, Codex, Gemini, OpenCode, Kimi).
 
 ## TL;DR
 
 A CLI can participate in chorus at three levels of depth. **Pick the deepest level you can verify**:
 
-| Level | Scope | What it enables |
-|---|---|---|
-| **1. Detection** | `cli-detect.ts`, onboarding picker, /connect card, `chorus diagnose`, `chorus init` | UI shows the CLI is installed; user can wire it. **No dispatch.** |
-| **2. Consumer-only** | Level 1 + orchestrator with no-op `connect()` that points at an existing MCP wire | The CLI can call chorus tools (via its own MCP loader). chorus does NOT dispatch to it. |
-| **3. Full reviewer** | Level 2 + shim, lineage enum sweep, voices seed, error-detector signatures | Chorus dispatches to this CLI as a doer/reviewer. |
+| Level                | Scope                                                                               | What it enables                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **1. Detection**     | `cli-detect.ts`, onboarding picker, /connect card, `chorus diagnose`, `chorus init` | UI shows the CLI is installed; user can wire it. **No dispatch.**                       |
+| **2. Consumer-only** | Level 1 + orchestrator with no-op `connect()` that points at an existing MCP wire   | The CLI can call chorus tools (via its own MCP loader). chorus does NOT dispatch to it. |
+| **3. Full reviewer** | Level 2 + shim, lineage enum sweep, voices seed, error-detector signatures          | Chorus dispatches to this CLI as a doer/reviewer.                                       |
 
-Grok Build landed at level 2 (consumer-only — it auto-picks chorus from `~/.claude.json`). Claude/Codex/Gemini/OpenCode/Kimi are all level 3.
+Grok Build, Claude, Codex, Gemini, OpenCode, and Kimi are all level 3 today. Grok Build also keeps a Level 2 orchestrator (`src/daemon/orchestrators/grok.ts`) for the consumer-side wiring — the CLI auto-picks chorus from `~/.claude.json` — so both directions work.
 
 ---
 
@@ -26,13 +26,13 @@ The minimum to make the CLI visible to users.
 
 ```ts
 export type DetectableCli =
-  | 'claude-code'
+  | "claude-code"
   // ...
-  | 'grok-cli';
+  | "grok-cli";
 
 const BINARY_NAME: Record<DetectableCli, string> = {
   // ...
-  'grok-cli': 'grok',
+  "grok-cli": "grok",
 };
 ```
 
@@ -41,8 +41,8 @@ const BINARY_NAME: Record<DetectableCli, string> = {
 If the CLI installs to a non-PATH location by default (Grok uses `~/.grok/bin`, OpenCode uses `~/.opencode/bin`, Kimi uses `~/.kimi/bin`), add it to `fallbackPaths()`:
 
 ```ts
-if (cli === 'grok-cli') {
-  dirs.push(path.join(HOME, '.grok', 'bin'));
+if (cli === "grok-cli") {
+  dirs.push(path.join(HOME, ".grok", "bin"));
 }
 ```
 
@@ -53,7 +53,7 @@ if (cli === 'grok-cli') {
 ```ts
 const CLI_SIGNATURES: Record<DetectableCli, RegExp> = {
   // ...
-  'grok-cli': /\bgrok\b/i,
+  "grok-cli": /\bgrok\b/i,
 };
 ```
 
@@ -95,7 +95,7 @@ node bin/chorus.mjs init | grep grok          # should appear in CLI list
 
 ## Level 2 — Consumer-only orchestrator
 
-For CLIs that can use chorus as an MCP client but can't (or shouldn't) be dispatched to as a reviewer. Cursor, Windsurf, and Grok Build are all level 2.
+For CLIs that can use chorus as an MCP client but can't (or shouldn't) be dispatched to as a reviewer. Cursor and Windsurf are level-2 only. Grok Build also has a level-2 orchestrator on top of its level-3 shim (some CLIs benefit from both directions).
 
 ### 2.1 Add the orchestrator name
 
@@ -103,9 +103,9 @@ For CLIs that can use chorus as an MCP client but can't (or shouldn't) be dispat
 
 ```ts
 export type OrchestratorName =
-  | 'claude'
+  | "claude"
   // ...
-  | 'grok';
+  | "grok";
 ```
 
 ### 2.2 Create the orchestrator file
@@ -206,6 +206,7 @@ The CLI must support **single-prompt mode**:
 ```
 
 It must:
+
 - Exit with code 0 on success, non-zero on failure
 - Print the answer to stdout
 - Honour a `--model <id>` flag
@@ -218,6 +219,7 @@ If any of these are missing, fall back to consumer-only (level 2).
 `src/daemon/agents/<name>.ts` — implement the `AgentShim` interface. For HTTP-dispatched (OpenAI-compatible) shims, copy `local.ts` or `openrouter.ts`. For tmux/headless CLI shims, copy `claude.ts` or `gemini.ts`.
 
 Key responsibilities:
+
 - `buildLaunchCommand(opts)` — for tmux mode (single-line + `%q`-quoted args)
 - `runHeadless(opts)` — async generator yielding `AgentEvent` (text_delta, message_done, error)
 - `estimateCostUsd(input, output, model?)` — best-effort cost model
@@ -282,18 +284,18 @@ Things that look like shortcuts but break things downstream:
 
 Before opening a PR, every level should pass its corresponding row:
 
-| Surface | Level 1 | Level 2 | Level 3 |
-|---|---|---|---|
-| `chorus diagnose` shows CLI | ✓ | ✓ | ✓ |
-| `chorus init` lists CLI | ✓ | ✓ | ✓ |
-| `/connect` shows orchestrator card | — | ✓ | ✓ |
-| Onboarding picker offers CLI | ✓ | ✓ | ✓ |
-| `/orchestrators` API reports `connected` correctly | — | ✓ | ✓ |
-| Phase editor lineage dropdown includes lineage | — | — | ✓ |
-| Template `lineage:` in YAML round-trips | — | — | ✓ |
-| Reviewer card renders on `/runs/<id>` | — | — | ✓ |
-| Voice auto-seeded on first detect | — | — | ✓ |
-| Cross-lineage fallback math correct | — | — | ✓ |
+| Surface                                            | Level 1 | Level 2 | Level 3 |
+| -------------------------------------------------- | ------- | ------- | ------- |
+| `chorus diagnose` shows CLI                        | ✓       | ✓       | ✓       |
+| `chorus init` lists CLI                            | ✓       | ✓       | ✓       |
+| `/connect` shows orchestrator card                 | —       | ✓       | ✓       |
+| Onboarding picker offers CLI                       | ✓       | ✓       | ✓       |
+| `/orchestrators` API reports `connected` correctly | —       | ✓       | ✓       |
+| Phase editor lineage dropdown includes lineage     | —       | —       | ✓       |
+| Template `lineage:` in YAML round-trips            | —       | —       | ✓       |
+| Reviewer card renders on `/runs/<id>`              | —       | —       | ✓       |
+| Voice auto-seeded on first detect                  | —       | —       | ✓       |
+| Cross-lineage fallback math correct                | —       | —       | ✓       |
 
 ---
 
@@ -314,11 +316,13 @@ When in doubt, copy the closest reference and grep for every place the analog CL
 It's tempting to wait until you can verify happy-path. Don't — the costs are higher than the benefits:
 
 **You CAN ship safely without paid auth if:**
+
 1. The CLI ships docs with an explicit streaming-json schema (e.g. `~/.grok/docs/user-guide/13-headless-mode.md`). Code to the spec, not your guess.
 2. You can empirically reproduce the failure path. Run the CLI unauthenticated, capture stderr, encode it in the error-detector. That's the path 100% of unpaid users hit — verifying it matters more than the happy path.
 3. The failure mode is `auth_missing` / `quota_exhausted`, which chorus's existing health machinery handles cleanly (voice auto-disables after N strikes, no infinite loops).
 
 **You CAN'T ship safely without paid auth if:**
+
 1. The CLI's docs are missing or contradict empirical behavior.
 2. The failure path is "spawn a browser flow" — chorus's headless dispatch will hang. Either gate at precheck (file probe + env var) or skip the integration.
 3. Cost accounting is critical. No usage block in success events = no per-call cost. Set `estimateCostUsd` to 0 and call it out in the orchestrator note.

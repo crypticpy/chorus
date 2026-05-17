@@ -25,17 +25,14 @@
  *   - Reviewer failed (auth/quota) → show the kind+message from the
  *     `## REVIEWER FAILED` summary that runReviewer writes
  */
-import type { Command } from 'commander';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
-import {
-  isDaemonHealthy,
-  readDaemonInfo,
-} from '../../lib/daemon-discovery.js';
-import { c, sym } from '../ui.js';
+import type { Command } from "commander";
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import { isDaemonHealthy, readDaemonInfo } from "../../lib/daemon-discovery.js";
+import { c, sym } from "../ui.js";
 
-const QUICKSTART_TEMPLATE_ID = 'quickstart-self-test';
+const QUICKSTART_TEMPLATE_ID = "quickstart-self-test";
 
 const SAMPLE_ARTIFACT = `// Quickstart self-test artifact — a tiny snippet with a real bug.
 // Reviewers should flag the off-by-one in the loop bound.
@@ -50,7 +47,7 @@ function average(numbers) {
 `;
 
 const SAMPLE_WORK =
-  'Quickstart self-test for chorus — does the reviewer catch the off-by-one in the average() loop?';
+  "Quickstart self-test for chorus — does the reviewer catch the off-by-one in the average() loop?";
 
 interface QuickstartOptions {
   daemonUrl?: string;
@@ -84,7 +81,7 @@ phases:
       require: 1
       crossLineage: false
       candidates:
-        - lineage: ${lineage}${model ? `\n          models:\n            - ${model}` : ''}
+        - lineage: ${lineage}${model ? `\n          models:\n            - ${model}` : ""}
     inputs:
       include: []
       exclude: []
@@ -107,75 +104,83 @@ async function pollChat(
   chatId: string,
   signal: AbortSignal,
 ): Promise<ChatStatus> {
-  let lastStatus = '';
+  let lastStatus = "";
   while (!signal.aborted) {
     const r = await fetch(`${baseUrl}/chats/${chatId}`);
     if (!r.ok) throw new Error(`status fetch failed: ${r.status}`);
     const env = (await r.json()) as { data?: ChatStatus };
     const data = env.data;
-    if (!data) throw new Error('chat status missing data');
+    if (!data) throw new Error("chat status missing data");
     if (data.status !== lastStatus) {
-      process.stdout.write(`  ${c.gray('·')} status: ${c.cyan(data.status)}\n`);
+      process.stdout.write(`  ${c.gray("·")} status: ${c.cyan(data.status)}\n`);
       lastStatus = data.status;
     }
     if (
-      data.status === 'approved' ||
-      data.status === 'merged' ||
-      data.status === 'blocked' ||
-      data.status === 'cancelled' ||
-      data.status === 'failed' ||
-      data.status === 'no_review'
+      data.status === "approved" ||
+      data.status === "merged" ||
+      data.status === "blocked" ||
+      data.status === "cancelled" ||
+      data.status === "failed" ||
+      data.status === "no_review"
     ) {
       return data;
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  throw new Error('aborted');
+  throw new Error("aborted");
 }
 
-function readReviewerAnswer(chatDir: string): { kind: string; body: string } | null {
+function readReviewerAnswer(
+  chatDir: string,
+): { kind: string; body: string } | null {
   // Round 1 is the only round for review-only; one reviewer dir lives
   // inside it (we built the template that way). Walk to find it.
-  const round1 = path.join(chatDir, 'round-1');
+  const round1 = path.join(chatDir, "round-1");
   if (!fs.existsSync(round1)) return null;
   const reviewerDirs = fs
     .readdirSync(round1)
-    .filter((n) => n.startsWith('reviewer-'));
+    .filter((n) => n.startsWith("reviewer-"));
   if (reviewerDirs.length === 0) return null;
-  const answerFile = path.join(round1, reviewerDirs[0], 'answer.md');
+  const answerFile = path.join(round1, reviewerDirs[0], "answer.md");
   if (!fs.existsSync(answerFile)) return null;
-  const body = fs.readFileSync(answerFile, 'utf-8');
-  if (body.startsWith('## REVIEWER FAILED')) {
-    return { kind: 'failed', body };
+  const body = fs.readFileSync(answerFile, "utf-8");
+  if (body.startsWith("## REVIEWER FAILED")) {
+    return { kind: "failed", body };
   }
-  return { kind: 'ok', body };
+  return { kind: "ok", body };
 }
 
-export async function runQuickstart(opts: QuickstartOptions = {}): Promise<void> {
-  console.log('');
-  console.log(`  ${sym.rocket} ${c.bold('Chorus quickstart')} ${c.dim('— 30-second self-test')}`);
-  console.log('');
+export async function runQuickstart(
+  opts: QuickstartOptions = {},
+): Promise<void> {
+  console.log("");
+  console.log(
+    `  ${sym.rocket} ${c.bold("Chorus quickstart")} ${c.dim("— 30-second self-test")}`,
+  );
+  console.log("");
 
   // 1. Daemon up?
   const info = readDaemonInfo();
   if (!info) {
-    console.log(`  ${c.red('✗')} daemon not running`);
-    console.log(`     run ${c.bold('chorus start')} first, then re-run quickstart`);
+    console.log(`  ${c.red("✗")} daemon not running`);
+    console.log(
+      `     run ${c.bold("chorus start")} first, then re-run quickstart`,
+    );
     process.exitCode = 1;
     return;
   }
   const healthy = await isDaemonHealthy(info.daemonPort, 1500);
   if (!healthy) {
-    console.log(`  ${c.red('✗')} daemon not responding on :${info.daemonPort}`);
-    console.log(`     run ${c.bold('chorus stop && chorus start')} to recycle`);
+    console.log(`  ${c.red("✗")} daemon not responding on :${info.daemonPort}`);
+    console.log(`     run ${c.bold("chorus stop && chorus start")} to recycle`);
     process.exitCode = 1;
     return;
   }
   const baseUrl = opts.daemonUrl ?? `http://127.0.0.1:${info.daemonPort}`;
-  console.log(`  ${c.green('✓')} daemon healthy on :${info.daemonPort}`);
+  console.log(`  ${c.green("✓")} daemon healthy on :${info.daemonPort}`);
 
   // 2. Pick a CLI lineage.
-  const { detectAllClis } = await import('../../lib/cli-detect.js');
+  const { detectAllClis } = await import("../../lib/cli-detect.js");
   // Map cli-detect ids to lineage strings the template-schema accepts.
   // Models intentionally omitted — the daemon's voices seed picks the
   // canonical default for each lineage, which keeps quickstart in sync
@@ -190,24 +195,24 @@ export async function runQuickstart(opts: QuickstartOptions = {}): Promise<void>
   // if the user is on a free tier. That's preferable to silently
   // skipping the only detected CLI.
   const cliToLineage: Record<string, string> = {
-    'claude-code': 'anthropic',
-    'codex-cli': 'openai',
-    'gemini-cli': 'google',
-    'opencode-cli': 'opencode',
-    'kimi-cli': 'moonshot',
-    'grok-cli': 'grok',
+    "claude-code": "anthropic",
+    "codex-cli": "openai",
+    "gemini-cli": "google",
+    "opencode-cli": "opencode",
+    "kimi-cli": "moonshot",
+    "grok-cli": "grok",
   };
   const detected = detectAllClis(true)
     .filter((d) => d.found)
     .filter((d) => cliToLineage[d.id] !== undefined);
   if (detected.length === 0) {
-    console.log('');
-    console.log(`  ${c.red('✗')} no dispatchable CLIs detected on PATH`);
+    console.log("");
+    console.log(`  ${c.red("✗")} no dispatchable CLIs detected on PATH`);
     console.log(
-      `     install Claude Code, Codex, Gemini CLI, OpenCode, or Kimi CLI`,
+      `     install Claude Code, Codex, Gemini CLI, OpenCode, Kimi CLI, or Grok CLI`,
     );
-    console.log(`     then run ${c.bold('chorus connect')} to wire MCP`);
-    console.log(`     ${c.gray('details:')} ${c.bold('chorus diagnose')}`);
+    console.log(`     then run ${c.bold("chorus connect")} to wire MCP`);
+    console.log(`     ${c.gray("details:")} ${c.bold("chorus diagnose")}`);
     process.exitCode = 1;
     return;
   }
@@ -215,33 +220,37 @@ export async function runQuickstart(opts: QuickstartOptions = {}): Promise<void>
   const lineage = cliToLineage[first.id];
   if (!lineage) {
     // Unreachable — filter above guarantees lineage exists.
-    console.log(`  ${c.red('✗')} detected CLI '${first.id}' has no quickstart mapping`);
+    console.log(
+      `  ${c.red("✗")} detected CLI '${first.id}' has no quickstart mapping`,
+    );
     process.exitCode = 1;
     return;
   }
   console.log(
-    `  ${c.green('✓')} reviewer: ${c.bold(first.id)} ${c.gray('(lineage:')} ${lineage}${c.gray(')')}`,
+    `  ${c.green("✓")} reviewer: ${c.bold(first.id)} ${c.gray("(lineage:")} ${lineage}${c.gray(")")}`,
   );
 
   // 3. Upsert the quickstart template (no model — defaults from the seed).
   const yaml = buildQuickstartYaml(lineage);
   const upsert = await fetch(`${baseUrl}/templates`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: QUICKSTART_TEMPLATE_ID, yaml }),
   });
   if (!upsert.ok) {
     const text = await upsert.text();
-    console.log(`  ${c.red('✗')} template upsert failed: ${upsert.status} ${text.slice(0, 200)}`);
+    console.log(
+      `  ${c.red("✗")} template upsert failed: ${upsert.status} ${text.slice(0, 200)}`,
+    );
     process.exitCode = 1;
     return;
   }
-  console.log(`  ${c.green('✓')} template seeded`);
+  console.log(`  ${c.green("✓")} template seeded`);
 
   // 4. Fire the chat.
   const chatRes = await fetch(`${baseUrl}/chats`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       work: SAMPLE_WORK,
       templateId: QUICKSTART_TEMPLATE_ID,
@@ -250,23 +259,25 @@ export async function runQuickstart(opts: QuickstartOptions = {}): Promise<void>
   });
   if (!chatRes.ok) {
     const text = await chatRes.text();
-    console.log(`  ${c.red('✗')} chat create failed: ${chatRes.status} ${text.slice(0, 200)}`);
+    console.log(
+      `  ${c.red("✗")} chat create failed: ${chatRes.status} ${text.slice(0, 200)}`,
+    );
     process.exitCode = 1;
     return;
   }
   const chatEnv = (await chatRes.json()) as { data?: { id: string } };
   const chatId = chatEnv.data?.id;
   if (!chatId) {
-    console.log(`  ${c.red('✗')} chat create returned no id`);
+    console.log(`  ${c.red("✗")} chat create returned no id`);
     process.exitCode = 1;
     return;
   }
   const cockpitUrl = await resolveCockpitUrlSafe();
-  console.log(`  ${c.green('✓')} chat fired ${c.gray('(id: ' + chatId + ')')}`);
+  console.log(`  ${c.green("✓")} chat fired ${c.gray("(id: " + chatId + ")")}`);
   if (cockpitUrl) {
     console.log(`     watch live: ${c.cyan(`${cockpitUrl}/runs/${chatId}`)}`);
   }
-  console.log('');
+  console.log("");
 
   // 5. Poll until terminal. Cap at 4 minutes — if a reviewer hasn't
   // finished by then, something's wrong with the CLI itself, not chorus.
@@ -286,54 +297,66 @@ export async function runQuickstart(opts: QuickstartOptions = {}): Promise<void>
     // because the SIGINT handler should return quickly so Node can
     // exit cleanly. The daemon's /chats/:id/cancel route is idempotent
     // so a double-cancel is harmless.
-    void fetch(`${baseUrl}/chats/${chatId}/cancel`, { method: 'POST' }).catch(() => {
-      /* daemon may already be tearing down — best effort */
-    });
-    console.log('');
-    console.log(`  ${c.gray('Ctrl-C — cancelling chat ' + chatId + '...')}`);
+    void fetch(`${baseUrl}/chats/${chatId}/cancel`, { method: "POST" }).catch(
+      () => {
+        /* daemon may already be tearing down — best effort */
+      },
+    );
+    console.log("");
+    console.log(`  ${c.gray("Ctrl-C — cancelling chat " + chatId + "...")}`);
   };
-  process.on('SIGINT', onSigint);
+  process.on("SIGINT", onSigint);
   let final: ChatStatus;
   try {
     final = await pollChat(baseUrl, chatId, ac.signal);
   } catch (err) {
-    console.log(`  ${c.red('✗')} ${err instanceof Error ? err.message : String(err)}`);
+    console.log(
+      `  ${c.red("✗")} ${err instanceof Error ? err.message : String(err)}`,
+    );
     process.exitCode = 1;
     return;
   } finally {
     clearTimeout(timeout);
-    process.off('SIGINT', onSigint);
+    process.off("SIGINT", onSigint);
   }
 
-  console.log('');
-  console.log(`  ${sym.pointer} ${c.bold('Result')} ${c.gray('— status: ' + final.status + (final.verdict ? ', verdict: ' + final.verdict : ''))}`);
-  console.log('');
+  console.log("");
+  console.log(
+    `  ${sym.pointer} ${c.bold("Result")} ${c.gray("— status: " + final.status + (final.verdict ? ", verdict: " + final.verdict : ""))}`,
+  );
+  console.log("");
 
   // 6. Render the reviewer's output (or its failure summary).
-  const chatDir = path.join(os.homedir(), '.chorus', 'chats', chatId);
+  const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
   const answer = readReviewerAnswer(chatDir);
   if (!answer) {
-    console.log(`  ${c.gray('(no reviewer output on disk yet — refresh the run page)')}`);
-  } else if (answer.kind === 'failed') {
+    console.log(
+      `  ${c.gray("(no reviewer output on disk yet — refresh the run page)")}`,
+    );
+  } else if (answer.kind === "failed") {
     console.log(c.red(answer.body.slice(0, 1500)));
-    console.log('');
-    console.log(`  ${c.gray('see')} ${c.bold('chorus diagnose')} ${c.gray('for failure context')}`);
+    console.log("");
+    console.log(
+      `  ${c.gray("see")} ${c.bold("chorus diagnose")} ${c.gray("for failure context")}`,
+    );
     process.exitCode = 1;
     return;
   } else {
     // Trim long responses to ~80 lines so terminal isn't flooded.
-    const lines = answer.body.split('\n');
-    const display = lines.slice(0, 80).join('\n');
+    const lines = answer.body.split("\n");
+    const display = lines.slice(0, 80).join("\n");
     console.log(display);
     if (lines.length > 80) {
       console.log(`  ${c.gray(`(${lines.length - 80} more lines on disk)`)}`);
     }
   }
-  console.log('');
+  console.log("");
   if (cockpitUrl) {
-    console.log(`  ${c.gray('full run:')} ${c.cyan(`${cockpitUrl}/runs/${chatId}`)}`);
+    console.log(
+      `  ${c.gray("full run:")} ${c.cyan(`${cockpitUrl}/runs/${chatId}`)}`,
+    );
   }
-  console.log('');
+  console.log("");
 }
 
 async function resolveCockpitUrlSafe(): Promise<string | null> {
@@ -355,15 +378,18 @@ async function resolveCockpitUrlSafe(): Promise<string | null> {
 
 export function registerQuickstartCommand(program: Command): void {
   program
-    .command('quickstart')
+    .command("quickstart")
     .description(
-      'Fire a 30-second sample chat against your first-detected CLI to confirm chorus works end-to-end',
+      "Fire a 30-second sample chat against your first-detected CLI to confirm chorus works end-to-end",
     )
     .action(async () => {
       try {
         await runQuickstart();
       } catch (err) {
-        console.error('quickstart failed:', err instanceof Error ? err.message : err);
+        console.error(
+          "quickstart failed:",
+          err instanceof Error ? err.message : err,
+        );
         process.exit(1);
       }
     });

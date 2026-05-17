@@ -11,31 +11,31 @@
  * not part of this probe — onboarding leaves their checkboxes for the user.
  */
 
-import { spawnSync } from 'child_process';
-import { existsSync, lstatSync, realpathSync } from 'fs';
-import { homedir, platform } from 'os';
-import path from 'path';
+import { spawnSync } from "child_process";
+import { existsSync, lstatSync, realpathSync } from "fs";
+import { homedir, platform } from "os";
+import path from "path";
 
-import { cliPaths } from './cli-paths.js';
+import { cliPaths } from "./cli-paths.js";
 
 export type DetectableCli =
-  | 'claude-code'
-  | 'codex-cli'
-  | 'gemini-cli'
-  | 'opencode-cli'
-  | 'kimi-cli'
-  | 'grok-cli';
+  | "claude-code"
+  | "codex-cli"
+  | "gemini-cli"
+  | "opencode-cli"
+  | "kimi-cli"
+  | "grok-cli";
 
 const BINARY_NAME: Record<DetectableCli, string> = {
-  'claude-code': 'claude',
-  'codex-cli': 'codex',
-  'gemini-cli': 'gemini',
-  'opencode-cli': 'opencode',
-  'kimi-cli': 'kimi',
-  'grok-cli': 'grok',
+  "claude-code": "claude",
+  "codex-cli": "codex",
+  "gemini-cli": "gemini",
+  "opencode-cli": "opencode",
+  "kimi-cli": "kimi",
+  "grok-cli": "grok",
 };
 
-const isWindows = platform() === 'win32';
+const isWindows = platform() === "win32";
 const HOME = homedir();
 
 /**
@@ -57,24 +57,25 @@ function discoverNpmPrefixes(): string[] {
   const dirs = new Set<string>();
   // Try `npm config get prefix` (1s budget — slow npm shouldn't block detect).
   try {
-    const result = spawnSync('npm', ['config', 'get', 'prefix'], {
-      encoding: 'utf-8',
+    const result = spawnSync("npm", ["config", "get", "prefix"], {
+      encoding: "utf-8",
       timeout: 1000,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ["ignore", "pipe", "ignore"],
     });
     if (result.status === 0) {
       const prefix = result.stdout.trim();
       if (prefix) {
-        dirs.add(isWindows ? prefix : path.join(prefix, 'bin'));
+        dirs.add(isWindows ? prefix : path.join(prefix, "bin"));
       }
     }
   } catch {
     /* npm not installed / not on PATH — fall through */
   }
   // NPM_CONFIG_PREFIX env override (common in CI, asdf, custom shells).
-  const envPrefix = process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix;
+  const envPrefix =
+    process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix;
   if (envPrefix) {
-    dirs.add(isWindows ? envPrefix : path.join(envPrefix, 'bin'));
+    dirs.add(isWindows ? envPrefix : path.join(envPrefix, "bin"));
   }
   cachedNpmDirs = Array.from(dirs);
   return cachedNpmDirs;
@@ -94,61 +95,61 @@ function discoverNpmPrefixes(): string[] {
  */
 function fallbackPaths(cli: DetectableCli): string[] {
   const bin = BINARY_NAME[cli];
-  const exts = isWindows ? ['.cmd', '.exe', ''] : [''];
+  const exts = isWindows ? [".cmd", ".exe", ""] : [""];
   const dirs: string[] = [];
 
   if (isWindows) {
-    if (process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, 'npm'));
+    if (process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, "npm"));
     if (process.env.LOCALAPPDATA) {
       dirs.push(
-        path.join(process.env.LOCALAPPDATA, 'Programs'),
+        path.join(process.env.LOCALAPPDATA, "Programs"),
         // Volta on Windows
-        path.join(process.env.LOCALAPPDATA, 'Volta', 'bin'),
+        path.join(process.env.LOCALAPPDATA, "Volta", "bin"),
       );
     }
     dirs.push(
-      path.join(HOME, 'AppData', 'Roaming', 'npm'),
-      path.join(HOME, '.volta', 'bin'),
-      path.join(HOME, '.bun', 'bin'),
+      path.join(HOME, "AppData", "Roaming", "npm"),
+      path.join(HOME, ".volta", "bin"),
+      path.join(HOME, ".bun", "bin"),
     );
   } else {
     dirs.push(
       // User-local
-      path.join(HOME, '.local', 'bin'),
-      path.join(HOME, '.npm-global', 'bin'),
-      path.join(HOME, '.config', 'yarn', 'global', 'node_modules', '.bin'),
-      path.join(HOME, '.yarn', 'bin'),
+      path.join(HOME, ".local", "bin"),
+      path.join(HOME, ".npm-global", "bin"),
+      path.join(HOME, ".config", "yarn", "global", "node_modules", ".bin"),
+      path.join(HOME, ".yarn", "bin"),
       // Node version managers
-      path.join(HOME, '.volta', 'bin'),
-      path.join(HOME, '.fnm', 'aliases', 'default', 'bin'),
+      path.join(HOME, ".volta", "bin"),
+      path.join(HOME, ".fnm", "aliases", "default", "bin"),
       // Alt package managers
-      path.join(HOME, '.bun', 'bin'),
-      path.join(HOME, '.cargo', 'bin'),
-      path.join(HOME, '.local', 'share', 'pnpm'),
-      path.join(HOME, 'Library', 'pnpm'),
+      path.join(HOME, ".bun", "bin"),
+      path.join(HOME, ".cargo", "bin"),
+      path.join(HOME, ".local", "share", "pnpm"),
+      path.join(HOME, "Library", "pnpm"),
       // System-wide
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      '/usr/bin',
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+      "/usr/bin",
       // Common npm-global system dirs
-      '/usr/local/lib/node_modules/.bin',
-      '/opt/homebrew/lib/node_modules/.bin',
+      "/usr/local/lib/node_modules/.bin",
+      "/opt/homebrew/lib/node_modules/.bin",
     );
   }
 
   // CLI-specific installer locations (their own install scripts).
-  if (cli === 'opencode-cli') {
-    dirs.push(path.join(HOME, '.opencode', 'bin'));
+  if (cli === "opencode-cli") {
+    dirs.push(path.join(HOME, ".opencode", "bin"));
   }
-  if (cli === 'kimi-cli') {
-    dirs.push(path.join(HOME, '.kimi', 'bin'));
+  if (cli === "kimi-cli") {
+    dirs.push(path.join(HOME, ".kimi", "bin"));
   }
-  if (cli === 'grok-cli') {
+  if (cli === "grok-cli") {
     // xAI's installer drops binaries here (curl|bash from x.ai/cli).
     // GROK_BIN_DIR env override is honoured upstream but not by the
     // chorus detector — second-chance scan is best-effort, users on
     // custom prefixes should add the dir to PATH.
-    dirs.push(path.join(HOME, '.grok', 'bin'));
+    dirs.push(path.join(HOME, ".grok", "bin"));
   }
 
   // npm-discovered prefixes — cheapest signal for "where did the user
@@ -178,18 +179,21 @@ export interface CliDetection {
   found: boolean;
   path?: string;
   /** "path" = found via PATH lookup, "fallback" = found via known dirs, "manual" = user-supplied */
-  source?: 'path' | 'fallback' | 'manual';
+  source?: "path" | "fallback" | "manual";
   /** Populated when found=false on manual validation — explains why
    *  (e.g. "no file at that path", "doesn't look like the claude CLI"). */
   reason?: string;
 }
 
 function pathLookup(name: string): string | null {
-  const cmd = isWindows ? 'where' : 'which';
-  const result = spawnSync(cmd, [name], { encoding: 'utf-8' });
+  const cmd = isWindows ? "where" : "which";
+  const result = spawnSync(cmd, [name], { encoding: "utf-8" });
   if (result.status !== 0) return null;
   // `where` returns one path per line on Windows; take the first.
-  const first = result.stdout.split(/\r?\n/).map((s) => s.trim()).find((s) => s.length > 0);
+  const first = result.stdout
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find((s) => s.length > 0);
   return first || null;
 }
 
@@ -214,18 +218,19 @@ function pathLookup(name: string): string | null {
  */
 const STARTS_WITH_VERSION = /^\s*\d+\.\d+/;
 const CLI_SIGNATURES: Record<DetectableCli, RegExp> = {
-  'claude-code': /\bclaude\b/i,
-  'codex-cli': /\bcodex\b/i,
+  "claude-code": /\bclaude\b/i,
+  "codex-cli": /\bcodex\b/i,
   // Bare version output — "0.40.1" — no CLI name to grep for.
-  'gemini-cli': STARTS_WITH_VERSION,
+  "gemini-cli": STARTS_WITH_VERSION,
   // Bare version output — "1.14.30" — same as gemini.
-  'opencode-cli': STARTS_WITH_VERSION,
-  'kimi-cli': /\bkimi\b/i,
+  "opencode-cli": STARTS_WITH_VERSION,
+  "kimi-cli": /\bkimi\b/i,
   // xAI's grok CLI — actual --version output unverified at time of
   // writing (binary execution sandboxed off in this env). Accepting
-  // either a "grok" name token OR a bare version string; basename
-  // check still gates on the binary being named "grok".
-  'grok-cli': /\bgrok\b/i,
+  // either a "grok" name token OR a bare version string ("1.2.3"); the
+  // basename check still gates on the binary being named "grok", so the
+  // bare-version branch can't match a different vendor's binary.
+  "grok-cli": /(?:\bgrok\b|^\s*\d+\.\d+)/i,
 };
 
 interface VerifyResult {
@@ -252,7 +257,7 @@ function basenameMatches(cli: DetectableCli, binPath: string): boolean {
   const expected = BINARY_NAME[cli].toLowerCase();
   const base = path.basename(binPath).toLowerCase();
   // Strip Windows extensions so claude.exe / claude.cmd both match "claude".
-  const stripped = base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
+  const stripped = base.replace(/\.(exe|cmd|bat|ps1)$/i, "");
   return stripped === expected;
 }
 
@@ -262,7 +267,7 @@ function verifyRunnable(
   timeoutMs = 2000,
 ): VerifyResult {
   if (!existsSync(binPath)) {
-    return { ok: false, reason: 'no file at that path' };
+    return { ok: false, reason: "no file at that path" };
   }
   if (!basenameMatches(cli, binPath)) {
     return {
@@ -272,10 +277,10 @@ function verifyRunnable(
   }
   let result;
   try {
-    result = spawnSync(binPath, ['--version'], {
-      encoding: 'utf-8',
+    result = spawnSync(binPath, ["--version"], {
+      encoding: "utf-8",
       timeout: timeoutMs,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
     return { ok: false, reason: `failed to spawn (${(err as Error).message})` };
@@ -286,13 +291,12 @@ function verifyRunnable(
       reason: `${path.basename(binPath)} --version exited ${result.status}`,
     };
   }
-  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   const signature = CLI_SIGNATURES[cli];
   if (!signature.test(output)) {
     return {
       ok: false,
-      reason:
-        `that binary ran, but its --version output doesn't look like the ${BINARY_NAME[cli]} CLI`,
+      reason: `that binary ran, but its --version output doesn't look like the ${BINARY_NAME[cli]} CLI`,
     };
   }
   return { ok: true };
@@ -307,19 +311,19 @@ function detectOne(cli: DetectableCli): CliDetection {
   //    fetch isn't available here without refactoring every detect caller.
   const manual = cliPaths.getCached(cli);
   if (manual && existsSync(manual) && verifyRunnable(cli, manual).ok) {
-    return { id: cli, found: true, path: manual, source: 'manual' };
+    return { id: cli, found: true, path: manual, source: "manual" };
   }
 
   // 1. PATH lookup
   const onPath = pathLookup(BINARY_NAME[cli]);
   if (onPath && verifyRunnable(cli, onPath).ok) {
-    return { id: cli, found: true, path: onPath, source: 'path' };
+    return { id: cli, found: true, path: onPath, source: "path" };
   }
 
   // 2. Fallback known dirs
   for (const candidate of fallbackPaths(cli)) {
     if (existsSync(candidate) && verifyRunnable(cli, candidate).ok) {
-      return { id: cli, found: true, path: candidate, source: 'fallback' };
+      return { id: cli, found: true, path: candidate, source: "fallback" };
     }
   }
 
@@ -378,12 +382,12 @@ export function validateCliPath(
   customPath: string,
 ): CliDetection & { reason?: string } {
   const trimmed = customPath.trim();
-  if (!trimmed) return { id: cli, found: false, reason: 'path is empty' };
+  if (!trimmed) return { id: cli, found: false, reason: "path is empty" };
   // Basename gate — strip extension on Windows so claude.cmd / claude.exe
   // both match `claude`.
   const expectedBin = BINARY_NAME[cli];
   const actualBase = isWindows
-    ? path.basename(trimmed).replace(/\.(cmd|exe)$/i, '')
+    ? path.basename(trimmed).replace(/\.(cmd|exe)$/i, "")
     : path.basename(trimmed);
   if (actualBase.toLowerCase() !== expectedBin.toLowerCase()) {
     return {
@@ -404,7 +408,7 @@ export function validateCliPath(
   //     and stored the symlink path — that's the attack surface we're
   //     closing.
   let canonical = trimmed;
-  let lstat: import('fs').Stats;
+  let lstat: import("fs").Stats;
   try {
     lstat = lstatSync(trimmed);
   } catch {
@@ -450,5 +454,5 @@ export function validateCliPath(
   // Persist the canonical (realpath-resolved) target. Daemon spawns
   // will hit the resolved binary even if the symlink is later swapped
   // by an attacker — closes the TOCTOU window from Audit D3.
-  return { id: cli, found: true, path: canonical, source: 'manual' };
+  return { id: cli, found: true, path: canonical, source: "manual" };
 }
