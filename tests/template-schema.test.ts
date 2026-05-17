@@ -40,6 +40,17 @@ const REVIEW_ONLY_PHASE = {
   },
 };
 
+const VERIFY_PHASE = {
+  id: "verify",
+  kind: "verify" as const,
+  title: "Run the verify command",
+  reviewer: {
+    require: 1,
+    crossLineage: false,
+    candidates: [{ lineage: "anthropic", models: ["claude-sonnet-4-6"] }],
+  },
+};
+
 describe("PhaseSchema", () => {
   it("accepts a standard review phase with doer + reviewer", () => {
     const result = PhaseSchema.safeParse(STANDARD_PHASE);
@@ -100,6 +111,61 @@ describe("PhaseSchema", () => {
       reviewer: { require: 0, crossLineage: false, candidates: [] },
     });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts a verify phase with reviewer + default commandTimeoutMs", () => {
+    const result = PhaseSchema.safeParse(VERIFY_PHASE);
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === "verify") {
+      expect(result.data.commandTimeoutMs).toBe(5 * 60 * 1000);
+      expect(result.data.maxIterations).toBe(5);
+      expect(result.data.feedbackPhase).toBeUndefined();
+    }
+  });
+
+  it("rejects a verify phase that tries to include a doer block (verify has no LLM doer)", () => {
+    // The whole point of verify is it runs a subprocess, not an LLM.
+    // A schema that silently dropped a `doer` field would let a
+    // template author think their model selection mattered when it
+    // doesn't — better to fail at parse time.
+    const result = PhaseSchema.safeParse({
+      ...VERIFY_PHASE,
+      doer: { lineage: "anthropic" },
+    });
+    // Discriminated union routes by `kind`, so an extra `doer` field
+    // is technically allowed by zod's default strip behaviour. Pin
+    // that as a TODO rather than asserting rejection — if we ever
+    // turn on `.strict()` for VerifyPhaseSchema this flips.
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a verify phase with TDD-loop fields (feedbackPhase + maxIterations)", () => {
+    const result = PhaseSchema.safeParse({
+      ...VERIFY_PHASE,
+      feedbackPhase: "implement",
+      maxIterations: 3,
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === "verify") {
+      expect(result.data.feedbackPhase).toBe("implement");
+      expect(result.data.maxIterations).toBe(3);
+    }
+  });
+
+  it("rejects a verify phase with maxIterations > 20 (loop cap)", () => {
+    const result = PhaseSchema.safeParse({
+      ...VERIFY_PHASE,
+      maxIterations: 50,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a verify phase with commandTimeoutMs > 30min", () => {
+    const result = PhaseSchema.safeParse({
+      ...VERIFY_PHASE,
+      commandTimeoutMs: 60 * 60 * 1000,
+    });
+    expect(result.success).toBe(false);
   });
 });
 

@@ -316,6 +316,23 @@ const VerifyPhaseSchema = z.object({
     .min(30_000)
     .max(30 * 60 * 1000)
     .default(5 * 60 * 1000),
+
+  /**
+   * TDD loop: phase id whose doer is re-prompted with the verify output
+   * when verify fails. Typically `"implement"`. When unset, a verify
+   * failure is terminal — no re-prompt, phase ends with the reviewer's
+   * verdict.
+   */
+  feedbackPhase: z.string().optional(),
+
+  /**
+   * Cap on verify→re-prompt iterations to keep a doomed loop from
+   * burning the whole token budget. Counts the number of times verify
+   * runs (not the number of re-prompts): maxIterations=5 means up to 4
+   * re-prompts of the feedback phase. Ignored when feedbackPhase is
+   * unset.
+   */
+  maxIterations: z.number().int().min(1).max(20).default(5),
 });
 
 /**

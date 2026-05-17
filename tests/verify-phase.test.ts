@@ -14,6 +14,7 @@ import {
   splitCommand,
   runVerifyCommand,
   formatVerifyArtifact,
+  formatVerifyFailureFeedback,
 } from "../src/daemon/phases/verify";
 
 let tmp: string;
@@ -232,5 +233,54 @@ describe("formatVerifyArtifact", () => {
     });
     expect(out).toContain("## stdout\n_(empty)_");
     expect(out).toContain("## stderr\n_(empty)_");
+  });
+});
+
+describe("formatVerifyFailureFeedback (TDD loop)", () => {
+  it("wraps a failed verify in the priorRoundFeedback markdown shape", () => {
+    const out = formatVerifyFailureFeedback(
+      "pnpm test",
+      {
+        command: "pnpm test",
+        argv: ["pnpm", "test"],
+        exitCode: 1,
+        stdout: "1 test failed",
+        stderr: "AssertionError: expected 3 to be 4",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        durationMs: 800,
+        timedOut: false,
+      },
+      2,
+    );
+    // Top-level heading must match what buildAsk's prior-round
+    // injection expects (otherwise the doer won't recognise it as
+    // feedback vs. attached prose).
+    expect(out.startsWith("## Prior round feedback")).toBe(true);
+    expect(out).toContain("iteration 2");
+    expect(out).toContain("`pnpm test`");
+    expect(out).toContain("exit 1");
+    expect(out).toContain("AssertionError");
+    expect(out).toContain("do");
+  });
+
+  it("labels timeouts distinctly so the doer doesn't try to debug an exit code", () => {
+    const out = formatVerifyFailureFeedback(
+      "pnpm test",
+      {
+        command: "pnpm test",
+        argv: ["pnpm", "test"],
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        durationMs: 60_000,
+        timedOut: true,
+      },
+      1,
+    );
+    expect(out).toContain("TIMED OUT");
+    expect(out).not.toContain("exit null");
   });
 });

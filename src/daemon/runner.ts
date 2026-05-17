@@ -417,7 +417,9 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           errorDetector,
           onEvent,
           abortSignal,
+          template,
           templateFallbackReviewer: template.fallback?.reviewer,
+          templateFallbackDoer: template.fallback?.doer,
         });
         if (verifyOutcome.allReviewersFailed) {
           anyPhaseAllReviewersFailed = true;
