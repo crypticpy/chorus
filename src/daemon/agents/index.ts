@@ -52,9 +52,37 @@ export function pickShimForVoice(lineage: Lineage, model?: string): AgentShim {
   return registry.pickShim(lineage);
 }
 
-/** True when this voice should bypass CLI-credential precheck (HTTP-auth instead). */
+/**
+ * True when this voice should bypass the CLI-credential precheck.
+ * Both openrouter and local authenticate via the secrets table rather
+ * than a CLI-managed cred file, so the on-disk credential probe is
+ * meaningless for them.
+ */
 export function isHttpDispatchedShim(shim: AgentShim): boolean {
   return shim === openrouterShim || shim === localShim;
+}
+
+/**
+ * True when dispatch consumes only remote/network resources and can
+ * safely bypass the daemon-wide local-CLI semaphore.
+ *
+ * `openrouter` is genuinely remote — each request is a network round-trip
+ * to a hosted gateway and many can fly in parallel without local pressure.
+ *
+ * `local`, despite also being an HTTP shim, talks to an OpenAI-compatible
+ * endpoint that almost always lives on `127.0.0.1` (Ollama default
+ * `http://127.0.0.1:11434/v1`). On consumer hardware the local inference
+ * server holds one model in VRAM/RAM at a time; firing N reviewers and a
+ * doer at it concurrently thrashes memory or OOMs the user's machine.
+ * The local shim therefore must go through the per-CLI semaphore (with a
+ * conservative default of 1 — see `concurrency.ts`).
+ *
+ * Keep this distinct from `isHttpDispatchedShim` so the credential-
+ * precheck bypass and the resource-cap bypass remain independently
+ * tunable per shim.
+ */
+export function bypassesLocalCliSemaphore(shim: AgentShim): boolean {
+  return shim === openrouterShim;
 }
 
 // Re-export shims for direct access if needed

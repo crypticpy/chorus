@@ -50,6 +50,16 @@ const AGENT_TO_LINEAGE: Record<string, string> = {
   "gemini-cli": "gemini",
   "opencode-cli": "opencode",
   "kimi-cli": "kimi",
+  // Grok shim emits agentName='grok-cli' (matches the binary it spawns);
+  // placeholder slots are synthesized with lineage='grok' (UI brand key).
+  // Without this entry the artifacts route would fall through to lineage
+  // 'grok-cli', so the real participant wouldn't reconcile with its
+  // pending card and would render as an unbranded extra.
+  "grok-cli": "grok",
+  // Local LLM HTTP shim uses agentName='local' (and reviewer dirs are
+  // reviewer-local-<idx>). Mirror that to the 'local' UI lineage so
+  // local-dispatched answers reconcile correctly.
+  local: "local",
 };
 
 /**
@@ -99,8 +109,7 @@ function readAttemptsByModel(
     for (const line of lines) {
       try {
         const e = JSON.parse(line) as Record<string, unknown>;
-        const model =
-          typeof e.model === "string" ? e.model : "(default)";
+        const model = typeof e.model === "string" ? e.model : "(default)";
         const errorKind =
           typeof e.errorKind === "string" ? e.errorKind : "unknown";
         const errorMessage =
@@ -186,7 +195,9 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
           ? "doer"
           : "reviewer";
         // Strip role prefix and trailing -N for reviewer indices.
-        const rawAgent = d.name.replace(/^(doer-|reviewer-)/, "").replace(/-\d+$/, "");
+        const rawAgent = d.name
+          .replace(/^(doer-|reviewer-)/, "")
+          .replace(/-\d+$/, "");
         const lineage = AGENT_TO_LINEAGE[rawAgent] ?? rawAgent;
         const answerPath = path.join(roundDir, d.name, "answer.md");
         // `hasAnswer` means "this participant finished" — gated on the
@@ -261,7 +272,8 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
                 costUsd?: unknown;
               };
             };
-            if (typeof stats.durationMs === "number") durationMs = stats.durationMs;
+            if (typeof stats.durationMs === "number")
+              durationMs = stats.durationMs;
             if (stats.usage && typeof stats.usage === "object") {
               const u: Record<string, number> = {};
               if (typeof stats.usage.inputTokens === "number")

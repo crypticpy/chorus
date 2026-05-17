@@ -22,7 +22,11 @@ import {
   type CliLineageKey,
 } from "../../lib/settings/concurrency.js";
 import { acquire as acquireCliSlot } from "../cli-semaphore.js";
-import { isHttpDispatchedShim, pickShimForVoice } from "../agents/index.js";
+import {
+  bypassesLocalCliSemaphore,
+  isHttpDispatchedShim,
+  pickShimForVoice,
+} from "../agents/index.js";
 import type { ErrorDetector } from "../error-detector.js";
 import { waitForAnswer } from "../output-watcher.js";
 import * as participantAborts from "../participant-aborts.js";
@@ -290,24 +294,26 @@ async function runReviewer(
     }
   }
 
-  // Acquire the daemon-wide CLI slot (global + per-lineage). Local CLI
-  // only — HTTP-dispatched shims aren't a memory pressure source and
-  // bypass the semaphore. The slot is held for the reviewer's entire
-  // lifetime, including any per-slot fallback chain — this is
-  // conservative when a fallback swaps to a different lineage (we keep
-  // the original slot rather than swap), but worst case is over-
-  // counting the original lineage's quota during the swap window. The
-  // global cap still holds.
+  // Acquire the daemon-wide CLI slot (global + per-lineage). Local-CLI
+  // shims AND the Local LLM HTTP shim (which still hits the user's GPU
+  // via 127.0.0.1) go through the semaphore. Only true remote HTTP shims
+  // (openrouter — hosted gateway) bypass it via bypassesLocalCliSemaphore.
+  // The slot is held for the reviewer's entire lifetime, including any
+  // per-slot fallback chain — this is conservative when a fallback swaps
+  // to a different lineage (we keep the original slot rather than swap),
+  // but worst case is over-counting the original lineage's quota during
+  // the swap window. The global cap still holds.
   //
   // The abortSignal is passed so a chat cancelled while this reviewer
   // is queued behind the cap doesn't leave a stale waiter blocking the
   // semaphore head forever. On abort, acquire rejects → we return null
   // (treated as a failed reviewer by the phase loop) without spawning.
   //
-  // `releaseSlot` is null for HTTP shims and the precheck-failed early-
-  // return; the finally block below is robust to that.
+  // `releaseSlot` is null for remote HTTP shims and the precheck-failed
+  // early-return; the finally block below is robust to that.
   let releaseSlot: (() => void) | null = null;
-  if (!isHttp && isCappedLineage(agentName)) {
+  const skipSemaphore = bypassesLocalCliSemaphore(shim);
+  if (!skipSemaphore && isCappedLineage(agentName)) {
     try {
       releaseSlot = await acquireCliSlot(agentName, abortSignal);
     } catch {
