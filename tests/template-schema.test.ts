@@ -231,6 +231,112 @@ describe("TemplateSchema hybrid guard", () => {
   });
 });
 
+describe("ReviewerSchema require validation (issue #15)", () => {
+  it("rejects reviewer.require greater than candidates.length", () => {
+    // The exact reproduction the user filed: require:5 with 3 candidates
+    // used to fail silently at run-start with no useful error. Schema
+    // now catches it at template-save time.
+    const result = TemplateSchema.safeParse({
+      id: "tri-review",
+      name: "tri",
+      description: "d",
+      phases: [
+        {
+          ...STANDARD_PHASE,
+          reviewer: {
+            require: 5,
+            crossLineage: true,
+            candidates: [
+              { lineage: "openai", models: ["gpt-5.3-codex"] },
+              { lineage: "opencode", models: ["opencode-go/glm-5.1"] },
+              { lineage: "anthropic", models: ["claude-sonnet-4-6"] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const msg = result.error.issues.map((i) => i.message).join(" ");
+      expect(msg).toMatch(/require.*cannot exceed.*candidates/i);
+    }
+  });
+
+  it("rejects reviewer.require exceeding distinct lineages when crossLineage=true", () => {
+    const result = TemplateSchema.safeParse({
+      id: "d",
+      name: "d",
+      description: "d",
+      phases: [
+        {
+          ...STANDARD_PHASE,
+          reviewer: {
+            require: 3,
+            crossLineage: true,
+            candidates: [
+              { lineage: "openai", models: ["gpt-5.5"] },
+              { lineage: "openai", models: ["gpt-5.3-codex"] },
+              { lineage: "anthropic", models: ["claude-opus-4-7"] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const msg = result.error.issues.map((i) => i.message).join(" ");
+      expect(msg).toMatch(/distinct lineages/i);
+    }
+  });
+
+  it("allows require=N with N candidates from N lineages and crossLineage=true", () => {
+    const result = TemplateSchema.safeParse({
+      id: "tri",
+      name: "tri",
+      description: "d",
+      phases: [
+        {
+          ...STANDARD_PHASE,
+          reviewer: {
+            require: 3,
+            crossLineage: true,
+            candidates: [
+              { lineage: "openai", models: ["gpt-5.5"] },
+              { lineage: "google", models: ["gemini-3.1-pro-preview"] },
+              { lineage: "anthropic", models: ["claude-opus-4-7"] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("allows require=2 with 3 candidates from 2 lineages and crossLineage=false", () => {
+    // Without crossLineage we only need require ≤ candidates.length.
+    const result = TemplateSchema.safeParse({
+      id: "d",
+      name: "d",
+      description: "d",
+      phases: [
+        {
+          ...STANDARD_PHASE,
+          reviewer: {
+            require: 2,
+            crossLineage: false,
+            candidates: [
+              { lineage: "openai", models: ["gpt-5.5"] },
+              { lineage: "openai", models: ["gpt-5.3-codex"] },
+              { lineage: "anthropic", models: ["claude-opus-4-7"] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe("OrchestrateManifestSchema", () => {
   const VALID_MANIFEST = {
     workers: [

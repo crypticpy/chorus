@@ -69,29 +69,66 @@ const reviewerLineageEnum = z.enum([
   "openrouter",
 ]);
 
-const ReviewerSchema = z.object({
-  require: z.number().int().min(0).default(1),
-  crossLineage: z.boolean().default(true),
-  candidates: z.array(
-    z.object({
-      lineage: reviewerLineageEnum,
-      models: z.array(z.string()).optional(),
-      /**
-       * Optional persona id. When set, the runner prepends the persona's
-       * `system_prompt` (looked up from the personas table at runtime) to
-       * the reviewer's ask.md so this slot reviews from a specific
-       * worldview — e.g. `sentinel` (security), `cartographer`
-       * (cross-platform), `translator` (UX).
-       *
-       * Lookup is lazy: an unknown id parses fine here but the runner
-       * silently falls back to the no-persona prompt rather than failing
-       * the run. Validation that a personaId resolves is the cockpit's
-       * job (the picker only offers ids that exist).
-       */
-      persona: z.string().optional(),
-    }),
-  ),
-});
+const ReviewerSchema = z
+  .object({
+    require: z.number().int().min(0).default(1),
+    crossLineage: z.boolean().default(true),
+    candidates: z.array(
+      z.object({
+        lineage: reviewerLineageEnum,
+        models: z.array(z.string()).optional(),
+        /**
+         * Optional persona id. When set, the runner prepends the persona's
+         * `system_prompt` (looked up from the personas table at runtime) to
+         * the reviewer's ask.md so this slot reviews from a specific
+         * worldview — e.g. `sentinel` (security), `cartographer`
+         * (cross-platform), `translator` (UX).
+         *
+         * Lookup is lazy: an unknown id parses fine here but the runner
+         * silently falls back to the no-persona prompt rather than failing
+         * the run. Validation that a personaId resolves is the cockpit's
+         * job (the picker only offers ids that exist).
+         */
+        persona: z.string().optional(),
+      }),
+    ),
+  })
+  .superRefine((reviewer, ctx) => {
+    // Reject `require: N` when N > candidates.length at template-save
+    // time. Without this guard the run would queue, fail to grant
+    // enough slots, and surface as an immediate, opaque chat-failure
+    // (issue #15: "Job moves immediately to failure upon Start press").
+    // Validating here turns it into a clean schema error users can fix
+    // before the run ever starts.
+    if (reviewer.require > reviewer.candidates.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["require"],
+        message:
+          `reviewer.require (${reviewer.require}) cannot exceed reviewer.candidates.length (${reviewer.candidates.length}). ` +
+          `Either lower require or add more candidates.`,
+      });
+    }
+
+    // Cross-lineage diversity is a stricter constraint: when crossLineage
+    // is true, you also can't satisfy `require: N` with fewer than N
+    // distinct lineages. Caught at template-save so the runner doesn't
+    // have to surface "no diverse fallback available" mid-run.
+    if (reviewer.crossLineage && reviewer.require > 0) {
+      const distinctLineages = new Set(
+        reviewer.candidates.map((c) => c.lineage),
+      ).size;
+      if (reviewer.require > distinctLineages) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["require"],
+          message:
+            `reviewer.require (${reviewer.require}) exceeds distinct lineages (${distinctLineages}) in candidates with crossLineage=true. ` +
+            `Either lower require, disable crossLineage, or add candidates from more lineages.`,
+        });
+      }
+    }
+  });
 
 const InputsSchema = z
   .object({
