@@ -96,6 +96,22 @@ function readReviewerArtifacts(chatId: string): ReviewerArtifact[] {
 }
 
 /**
+ * `process.cwd()` throws ENOENT when the working directory has been
+ * deleted between process start and the call (e.g. tmpdir cleanup,
+ * `rm -rf` on the project dir while a long-lived MCP server runs).
+ * Fall back to homedir so the daemon can still accept the request —
+ * downstream repo detection will surface a clearer error than an
+ * unhandled ENOENT exception.
+ */
+function safeCwd(): string {
+  try {
+    return process.cwd();
+  } catch {
+    return os.homedir();
+  }
+}
+
+/**
  * Resolve the cockpit URL the run links should point at. Sync read from
  * daemon.json (no health probe — the link is informational; if the
  * cockpit is dead the user finds out when they click it). CHORUS_WEB_URL
@@ -476,12 +492,15 @@ export async function createChat(input: unknown) {
   const parsed = CreateChatSchema.parse(input);
   const templateId = resolveTemplateId(parsed);
 
+  const repoPath = parsed.repoPath ?? safeCwd();
+
   const result = await daemonFetch<DaemonChatRow>("/chats", {
     method: "POST",
     body: JSON.stringify({
       work: parsed.work,
       templateId,
       files: parsed.files,
+      repoPath,
       ...(parsed.artifact !== undefined ? { artifact: parsed.artifact } : {}),
       ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
     }),
