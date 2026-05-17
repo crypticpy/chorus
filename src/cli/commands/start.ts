@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'child_process';
 import type { Command } from 'commander';
 import fs from 'fs';
-import open from 'open';
+import { openBrowser } from '../open-browser.js';
 import os from 'os';
 import path from 'path';
 import {
@@ -260,7 +260,7 @@ async function alreadyRunningHealthy(
     }
     console.log('');
     if (uiFlag && shouldAutoOpenBrowser(env)) {
-      open(cockpitUrl);
+      await openBrowser(cockpitUrl);
     }
   } else {
     console.log('');
@@ -362,7 +362,7 @@ async function spawnCockpitForExistingDaemon(
   }
   console.log('');
   if (shouldAutoOpenBrowser(env)) {
-    open(cockpitUrl);
+    await openBrowser(cockpitUrl);
   }
 }
 
@@ -739,8 +739,13 @@ function scheduleAutoOpenBrowser(
   cockpitPort: number,
 ): void {
   setTimeout(() => {
-    if (uiFlag && shouldAutoOpenBrowser(detectRuntimeEnv())) {
-      open(`http://127.0.0.1:${cockpitPort}`);
-    }
+    if (!uiFlag || !shouldAutoOpenBrowser(detectRuntimeEnv())) return;
+    // Catch the rejection here — a fire-and-forget setTimeout would
+    // surface an unhandled rejection on hosts where `open` can't find
+    // a browser (headless boxes, exotic envs).
+    openBrowser(`http://127.0.0.1:${cockpitPort}`).catch(() => {
+      // Best-effort browser open; ignore failures silently — the cockpit
+      // URL was already printed to the user above.
+    });
   }, 1000);
 }

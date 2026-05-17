@@ -9,6 +9,10 @@ import {
   kindToStatus,
   type CliLineage,
 } from "../../lib/cli-health.js";
+import {
+  recordVoiceFailure,
+  recordVoiceSuccess,
+} from "../../lib/voice-failure-tracker.js";
 import { precheckLineage } from "../../lib/cli-precheck.js";
 import { personas } from "../../lib/db/index.js";
 import { getPermissions } from "../../lib/settings/permissions.js";
@@ -25,6 +29,10 @@ import * as participantAborts from "../participant-aborts.js";
 import type { TmuxManager } from "../tmux-types.js";
 import { buildReviewerAsk } from "./prompt-builder.js";
 import { runReviewerHeadless } from "./reviewer.js";
+import {
+  release as releaseFallbackClaim,
+  tryClaim as tryClaimFallbackTarget,
+} from "./fallback-registry.js";
 import {
   runWithChainFallback,
   runWithModelFallback,
@@ -210,6 +218,49 @@ async function runReviewer(
   const agentName = shim.name;
   const isHttp = isHttpDispatchedShim(shim);
 
+  // Reviewer dir is created BEFORE the precheck so any pre-spawn failure
+  // can still write a `## REVIEWER FAILED` summary to answer.md. Without
+  // this, a precheck-failed slot leaves NO on-disk participant; the
+  // cockpit's enrich-rounds loop then can't reconcile the synthesised
+  // template slot against any real participant, so the card sits at
+  // "Queued — waiting for an open slot." forever (issue #25 — user with
+  // no codex/gemini/kimi installed saw every chat stuck queued).
+  const roundDir = path.join(chatDir, `round-${round}`);
+  const reviewerDir = path.join(
+    roundDir,
+    `reviewer-${agentName}-${reviewerIdx}`,
+  );
+  if (!fs.existsSync(reviewerDir)) {
+    fs.mkdirSync(reviewerDir, { recursive: true });
+  }
+  const askFile = path.join(reviewerDir, "ask.md");
+  const answerFile = path.join(reviewerDir, "answer.md");
+
+  // Helper: write a `## REVIEWER FAILED` summary to answer.md so the
+  // cockpit's `parseFailureSummary` lifts the slot out of "pending" and
+  // shows the actual error. Same shape `runReviewerHeadless` writes for
+  // post-spawn failures, kept in sync with the parser (kind, lineage,
+  // model, message).
+  const writePreSpawnFailure = (
+    kind: string,
+    message: string,
+    resetAt?: number,
+  ): void => {
+    try {
+      fs.writeFileSync(
+        answerFile,
+        `## REVIEWER FAILED\n\n` +
+          `**Kind:** ${kind}\n` +
+          `**Lineage:** ${candidate.lineage}\n` +
+          `**Model:** ${reviewerModel ?? "(default)"}\n` +
+          (resetAt ? `**Resets:** ${new Date(resetAt).toISOString()}\n` : "") +
+          `\n${message}\n`,
+      );
+    } catch {
+      /* best-effort — diagnostics shouldn't fail the run */
+    }
+  };
+
   // Pre-spawn precheck — same gate as runDoer. A reviewer that fails
   // precheck returns null, which the phase loop already handles by
   // counting it toward the all-reviewers-failed threshold and continuing
@@ -218,6 +269,7 @@ async function runReviewer(
   if (!isHttp) {
     const preRev = await precheckLineage(candidate.lineage as CliLineage);
     if (!preRev.ok) {
+      writePreSpawnFailure(preRev.reason, preRev.message, preRev.resetAt);
       onEvent({
         chatId,
         type: "cli_warning",
@@ -262,22 +314,13 @@ async function runReviewer(
       // Aborted while waiting for slot — don't proceed. The phase loop
       // counts this reviewer as failed which preserves "all-failed"
       // semantics for the chat-level verdict.
+      writePreSpawnFailure(
+        "cancelled",
+        "Reviewer cancelled while queued for an open CLI slot.",
+      );
       return null;
     }
   }
-
-  const roundDir = path.join(chatDir, `round-${round}`);
-  const reviewerDir = path.join(
-    roundDir,
-    `reviewer-${agentName}-${reviewerIdx}`,
-  );
-
-  if (!fs.existsSync(reviewerDir)) {
-    fs.mkdirSync(reviewerDir, { recursive: true });
-  }
-
-  const askFile = path.join(reviewerDir, "ask.md");
-  const answerFile = path.join(reviewerDir, "answer.md");
 
   // Outer try/finally — guarantees the cli-semaphore slot is returned
   // on every path: headless's nested try/finally for participantAborts,
@@ -378,31 +421,80 @@ async function runReviewer(
         return await runWithChainFallback(
           chain,
           async (entry) => {
-            // Cross-lineage swap: when the entry's lineage differs from the
-            // slot's primary, re-resolve the shim. The slot's identity
-            // (agentName, reviewerDir, participant key) stays bound to the
-            // primary lineage so the cockpit card doesn't re-key mid-run —
-            // the cli_warning below tells the UI a swap happened.
-            const entryShim =
-              entry.lineage === candidate.lineage
-                ? shim
-                : pickShimForVoice(entry.lineage as Lineage, entry.model);
-            return runReviewerHeadless({
-              shim: entryShim,
+            // Cross-slot collision check: another reviewer in this same
+            // chat/round may already be running this exact (lineage, model).
+            // Common cause is two slots sharing the template-level fallback
+            // (e.g. anthropic/claude-sonnet-4-6 at the tail of every slot's
+            // chain). Without this, both slots dispatch the same model in
+            // parallel — wasted cost AND the lineage diversity that's the
+            // whole point of multi-LLM peer review collapses. On collision,
+            // return null so runWithChainFallback advances to the next chain
+            // entry; emit a cli_warning tagged `fallback_collision` so the
+            // cockpit can show why the slot skipped.
+            const claimed = tryClaimFallbackTarget(
               chatId,
-              phase,
               round,
-              reviewerIdx,
-              candidateLineage: entry.lineage,
-              candidateModel: entry.model,
-              agentName,
-              askContent: ask,
-              answerFile,
-              reviewerDir,
-              repoPath,
-              abortSignal: handle.signal,
-              onEvent,
-            });
+              entry.lineage,
+              entry.model,
+            );
+            if (!claimed) {
+              console.warn(
+                `[reviewer] fallback collision chat=${chatId} round=${round} ` +
+                  `slot=${agentName}-${reviewerIdx} ` +
+                  `target=${entry.lineage}/${entry.model ?? "(default)"} ` +
+                  `— another slot is already running it; advancing chain`,
+              );
+              onEvent({
+                chatId,
+                type: "cli_warning",
+                payload: {
+                  phaseId: phase.id,
+                  round,
+                  role: "reviewer",
+                  agent: `${agentName}-${reviewerIdx}`,
+                  reason: "fallback_collision",
+                  fromLineage: entry.lineage,
+                  toLineage: entry.lineage,
+                  fromModel: entry.model ?? "(default)",
+                  toModel: entry.model ?? "(default)",
+                  message: `Skipping ${entry.lineage}/${entry.model ?? "(default)"} — another reviewer slot is already running it. Advancing to next fallback to preserve lineage diversity.`,
+                },
+                ts: Date.now(),
+              });
+              return null;
+            }
+            try {
+              // Cross-lineage swap: when the entry's lineage differs from the
+              // slot's primary, re-resolve the shim. The slot's identity
+              // (agentName, reviewerDir, participant key) stays bound to the
+              // primary lineage so the cockpit card doesn't re-key mid-run —
+              // the cli_warning below tells the UI a swap happened.
+              const entryShim =
+                entry.lineage === candidate.lineage
+                  ? shim
+                  : pickShimForVoice(entry.lineage as Lineage, entry.model);
+              return await runReviewerHeadless({
+                shim: entryShim,
+                chatId,
+                phase,
+                round,
+                reviewerIdx,
+                candidateLineage: entry.lineage,
+                candidateModel: entry.model,
+                agentName,
+                askContent: ask,
+                answerFile,
+                reviewerDir,
+                repoPath,
+                abortSignal: handle.signal,
+                onEvent,
+              });
+            } finally {
+              // Release whether the attempt succeeded, returned null, or threw
+              // — the slot is no longer running this target, so another slot's
+              // chain advance can claim it next.
+              releaseFallbackClaim(chatId, round, entry.lineage, entry.model);
+            }
           },
           (from, to, fromIdx) => {
             const sameLineage = from.lineage === to.lineage;
@@ -552,6 +644,41 @@ async function runReviewer(
                 healthErr,
               );
             });
+            // Per-voice failure tracking (#11). Only count quota_exhausted —
+            // other error kinds (mcp_handshake_failed, network blips)
+            // shouldn't accumulate against the voice's strikes counter.
+            if (err.kind === "quota_exhausted") {
+              recordVoiceFailure({
+                lineage: candidate.lineage as CliLineage,
+                model: candidate.models?.[0],
+                hasResetAt: typeof err.resetAt === "number",
+              })
+                .then((result) => {
+                  if (result.disabled) {
+                    onEvent({
+                      chatId,
+                      type: "cli_warning",
+                      payload: {
+                        phaseId: phase.id,
+                        round,
+                        role: "reviewer",
+                        agent: `${agentName}-${reviewerIdx}`,
+                        reason: "voice_auto_disabled",
+                        voiceId: result.voiceId,
+                        detail:
+                          "Voice auto-disabled after persistent quota_exhausted with no reset window. Re-enable on the Connect page if your account has changed.",
+                      },
+                      ts: Date.now(),
+                    });
+                  }
+                })
+                .catch((trackErr: unknown) => {
+                  console.error(
+                    "[chorus] recordVoiceFailure failed:",
+                    trackErr,
+                  );
+                });
+            }
             onEvent({
               chatId,
               type: "cli_error",
@@ -580,6 +707,14 @@ async function runReviewer(
         // Watcher resolved on timeout/silence with no real answer.
         return null;
       }
+      // Successful run — clear the per-voice failure counter (#11).
+      // A flaky day no longer accumulates into permanent auto-disable.
+      recordVoiceSuccess({
+        lineage: candidate.lineage as CliLineage,
+        model: candidate.models?.[0],
+      }).catch((trackErr: unknown) => {
+        console.error("[chorus] recordVoiceSuccess failed:", trackErr);
+      });
       return verdictFromReviewerText(result.content);
     } catch {
       // Timed out or watcher errored — no valid answer produced.

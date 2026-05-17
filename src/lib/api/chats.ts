@@ -75,7 +75,50 @@ function fromRow(row: RawChatRow): Chat {
       const parsed = JSON.parse(row.template_snapshot);
       const result = TemplateSchema.safeParse(parsed);
       if (result.success) {
-        templateSnapshot = result.data as unknown as Template;
+        // Daemon-side TemplateSchema only carries `candidates` on each
+        // ReviewerRule — the cockpit's Template type expects
+        // `candidatesWithModels` populated (mirrors what
+        // `lib/api/templates.ts:getTemplate` produces from the daemon's
+        // /templates response). Without this derivation, `enrichRounds`
+        // iterates zero reviewer slots from the snapshot and no model
+        // name reaches the run-page cards. Regression since chorus-101
+        // (template snapshot, v0.8.26). Upstream PR #6.
+        const enriched = {
+          ...result.data,
+          phases: result.data.phases.map((p) => {
+            // Only standard / review_only reviewers carry a `candidates`
+            // array (the rule-shape the cockpit cards iterate). Audit-
+            // phase reviewers are single-voice (lineage/models/persona,
+            // no candidates) and don't need the enrichment — leave them
+            // alone so the type narrowing stays clean.
+            if (!("reviewer" in p) || !p.reviewer) return p;
+            const r = p.reviewer as {
+              candidates?: Array<{
+                lineage: string;
+                models?: string[];
+                persona?: string;
+              }>;
+              candidatesWithModels?: unknown[];
+            };
+            if (!r.candidates) return p;
+            return {
+              ...p,
+              reviewer: {
+                ...p.reviewer,
+                // If a future daemon ever serialises this field
+                // directly, prefer it; otherwise derive from candidates.
+                candidatesWithModels:
+                  r.candidatesWithModels ??
+                  r.candidates.map((c) => ({
+                    lineage: c.lineage,
+                    models: c.models ?? [],
+                    ...(c.persona !== undefined ? { persona: c.persona } : {}),
+                  })),
+              },
+            };
+          }),
+        };
+        templateSnapshot = enriched as unknown as Template;
       }
       // else: leave undefined — caller's fallback handles it
     } catch {

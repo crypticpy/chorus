@@ -1,11 +1,13 @@
 import { Command } from 'commander';
 import fs from 'fs';
-import open from 'open';
+import { openBrowser } from './open-browser.js';
 import os from 'os';
 import path from 'path';
 import { resolveCockpitUrl } from '../lib/daemon-discovery.js';
+import { registerDiagnoseCommand } from './commands/diagnose.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerInitCommand } from './commands/init.js';
+import { registerQuickstartCommand } from './commands/quickstart.js';
 import { registerStartCommand } from './commands/start.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerStopCommand } from './commands/stop.js';
@@ -60,7 +62,9 @@ registerStartCommand(program);
 registerStopCommand(program);
 registerStatusCommand(program);
 registerDoctorCommand(program);
+registerDiagnoseCommand(program);
 registerUpdateCommand(program);
+registerQuickstartCommand(program);
 
 program
   .command('ui')
@@ -77,7 +81,7 @@ program
       }
       console.log('');
       if (shouldAutoOpenBrowser(env)) {
-        await open(cockpitUrl);
+        await openBrowser(cockpitUrl);
         console.log(`\nOpening ${cockpitUrl}...`);
       }
     } catch (error) {
