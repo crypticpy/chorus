@@ -54,6 +54,7 @@ export const LINEAGES: { id: ReviewerLineage; label: string; dot: string }[] = (
     "kimi",
     "openrouter",
     "local",
+    "grok",
   ] as const
 ).map((id) => ({
   id,
@@ -65,7 +66,10 @@ export const DEFAULT_MODELS: Record<ReviewerLineage, string> =
   UI_LINEAGE_DEFAULT_MODEL;
 
 // Daemon-lineage → cockpit-lineage. `xai` is a legacy alias from older
-// templates that grouped under cockpit "opencode".
+// templates that grouped opencode-go/grok-* models under cockpit "opencode";
+// preserved so old YAML still renders. The new first-party `grok` daemon
+// lineage (Grok Build CLI) maps to its own cockpit "grok" — distinct from
+// the legacy alias, distinct from the opencode umbrella.
 export const DAEMON_TO_COCKPIT_LINEAGE: Record<string, ReviewerLineage> = {
   anthropic: "claude",
   openai: "codex",
@@ -74,4 +78,5 @@ export const DAEMON_TO_COCKPIT_LINEAGE: Record<string, ReviewerLineage> = {
   moonshot: "kimi",
   xai: "opencode",
   local: "local",
+  grok: "grok",
 };

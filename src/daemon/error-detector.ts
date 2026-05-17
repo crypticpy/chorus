@@ -206,15 +206,35 @@ export class ErrorDetector {
     //   - kimi:   "kimi: not logged in"
     // Done after the per-CLI patterns above so the more-specific
     // detectors (token_refresh_lost, mcp_handshake_failed) take priority.
+    // Pattern 1f: Grok-specific subscription-tier check. Must run BEFORE
+    // the generic auth-prompt regex below so it doesn't get misclassified
+    // as token_refresh_lost. SuperGrok Heavy is a billing-tier failure,
+    // not an auth-token-refresh failure — they have different recovery
+    // CTAs and route to different health states (quota_exhausted vs
+    // auth_invalid). Keeping the patterns separate avoids category
+    // ambiguity for future rules that route on `kind` alone.
+    if (lineage === 'grok') {
+      if (/SuperGrok Heavy subscription required/i.test(paneText)) {
+        return {
+          kind: 'quota_exhausted',
+          lineage,
+          message: 'Grok Build requires a SuperGrok Heavy subscription.',
+          cta: 'Upgrade at console.x.ai or disable the grok voice in Settings.',
+          detail: 'SuperGrok Heavy subscription required',
+        };
+      }
+    }
+
     if (
       lineage === 'anthropic' ||
       lineage === 'openai' ||
       lineage === 'google' ||
       lineage === 'opencode' ||
-      lineage === 'moonshot'
+      lineage === 'moonshot' ||
+      lineage === 'grok'
     ) {
       const authPrompt =
-        /(?:please (?:run|log\s*in|sign\s*in)|run\s+`?(?:claude|codex|gemini|opencode|kimi)\s+login|to\s+sign\s+in|not logged in|not authenticated|no active session|authentication required|api key (?:invalid|missing|expired|revoked|not (?:found|set))|(?:[A-Z_]+_)?API_KEY\s+(?:environment variable\s+)?not\s+(?:found|set))/i.exec(
+        /(?:please (?:run|log\s*in|sign\s*in)|run\s+`?(?:claude|codex|gemini|opencode|kimi|grok)\s+login|to\s+sign\s+in|not logged in|not authenticated|no active session|authentication required|api key (?:invalid|missing|expired|revoked|not (?:found|set))|(?:[A-Z_]+_)?API_KEY\s+(?:environment variable\s+)?not\s+(?:found|set)|Signing in with Grok|Open this URL to sign in)/i.exec(
           paneText,
         );
       if (authPrompt) {

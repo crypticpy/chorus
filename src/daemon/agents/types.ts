@@ -21,6 +21,7 @@ export type Lineage =
   | "moonshot"
   | "openrouter"
   | "local"
+  | "grok"
   | "any";
 
 /**
