@@ -340,6 +340,24 @@ describe("formatReport", () => {
           createdAt: 1778147183000,
           erroredParticipants: [],
         },
+        {
+          // no_review = all reviewers failed (missing CLI / auth / quota
+          // exhausted). Including it here is the whole point of the
+          // diagnose section; if it disappears from the IN-list, this
+          // assertion fails first.
+          chatId: "019E01D17523A472821926572B6AC38D",
+          status: "no_review",
+          createdAt: 1778147184000,
+          erroredParticipants: [
+            {
+              dir: "reviewer-claude-cli-1",
+              lineage: "anthropic",
+              model: "claude-sonnet-4-6",
+              errorKind: "quota_exhausted",
+              errorMessageBytes: 88,
+            },
+          ],
+        },
       ],
     });
     expect(out).toContain("## Recent failed chats");
@@ -349,6 +367,9 @@ describe("formatReport", () => {
     expect(out).toContain("auth_error");
     expect(out).toContain("124 bytes on disk");
     expect(out).toContain("019E01D17523A472821926572B6AC38C");
+    expect(out).toContain("019E01D17523A472821926572B6AC38D");
+    expect(out).toContain("no_review");
+    expect(out).toContain("quota_exhausted");
     // Privacy: never surface raw error text from LLM APIs (may echo
     // user prompts / template content). Bytes-only is the contract.
     expect(out).not.toContain("Not authenticated");

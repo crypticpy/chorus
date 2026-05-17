@@ -646,13 +646,19 @@ async function gather(): Promise<DiagnoseSnapshot> {
   // ACTUAL failure reason (errorKind + length of errorMessage) instead
   // of just "this chat failed". Cuts the most common triage roundtrip
   // ("what specifically happens when you run it?").
+  //
+  // `no_review` is included alongside failed/blocked/cancelled: it's the
+  // terminal status when every reviewer fails (missing CLI, auth, quota
+  // exhausted), which is exactly when `_attempts.jsonl` carries the
+  // failure context this section is meant to surface. Excluding it
+  // hid the most common all-reviewers-down case from diagnose output.
   let recentFailedChats: RecentFailedChat[] = [];
   try {
     const { getDb } = await import("../../lib/db/connection.js");
     const db = await getDb();
     const rows = await db.execute(
       `SELECT id, status, created_at FROM chats
-       WHERE status IN ('failed', 'blocked', 'cancelled')
+       WHERE status IN ('failed', 'blocked', 'cancelled', 'no_review')
        ORDER BY created_at DESC LIMIT 5`,
     );
     recentFailedChats = (
