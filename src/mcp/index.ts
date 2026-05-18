@@ -2,7 +2,7 @@
 
 /**
  * Chorus MCP stdio server.
- * Exposes 9 tools to orchestrators (Claude Code, Codex, Cursor).
+ * Exposes 10 tools to orchestrators (Claude Code, Codex, Cursor).
  * Each tool calls the daemon REST API on http://127.0.0.1:7707.
  */
 
@@ -20,6 +20,7 @@ import {
   listTemplates,
   listPersonas,
   invokePersona,
+  reviewPr,
   CreateChatSchema,
   WaitForChatSchema,
   GetChatStatusSchema,
@@ -29,6 +30,7 @@ import {
   ListTemplatesSchema,
   ListPersonasSchema,
   InvokePersonaSchema,
+  ReviewPrSchema,
 } from "./tools.js";
 
 // Read version from the shipped package.json — single source of truth,
@@ -52,7 +54,7 @@ const mcpServer = new McpServer({
 });
 
 /**
- * Register the 7 MCP tools.
+ * Register the 10 MCP tools.
  */
 
 mcpServer.registerTool(
@@ -68,7 +70,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -135,9 +137,7 @@ mcpServer.registerTool(
             ? ((event as Record<string, unknown>).phase as string | undefined)
             : undefined;
         const msg =
-          status && phase
-            ? `${status} · ${phase}`
-            : status ?? "chat event";
+          status && phase ? `${status} · ${phase}` : (status ?? "chat event");
         void sendProgress(msg);
       });
 
@@ -152,7 +152,7 @@ mcpServer.registerTool(
     } finally {
       clearInterval(heartbeat);
     }
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -167,7 +167,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -182,7 +182,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -197,7 +197,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -212,7 +212,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -227,7 +227,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -242,7 +242,7 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
 );
 
 mcpServer.registerTool(
@@ -257,7 +257,22 @@ mcpServer.registerTool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };
-  }
+  },
+);
+
+mcpServer.registerTool(
+  "review_pr",
+  {
+    description:
+      "Fetch a GitHub PR by URL and run reviewers against it. The chorus daemon shells out to `gh` on the host (you must already be logged in via `gh auth login`) to pull the PR's description, diff, and existing comments, then seeds a review-only chat from the synthesized artifact. Returns chatId, status, and URL — reviewers run async.",
+    inputSchema: ReviewPrSchema,
+  },
+  async (input) => {
+    const result = await reviewPr(input);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    };
+  },
 );
 
 /**

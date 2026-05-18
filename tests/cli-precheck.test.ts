@@ -12,15 +12,30 @@
  * we control.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 
-import { _resetDbForTests, getDb } from '@/lib/db';
-import { recordHealth } from '@/lib/cli-health';
-import { precheckLineage } from '@/lib/cli-precheck';
+import { _resetDbForTests, getDb } from "@/lib/db";
+import { recordHealth } from "@/lib/cli-health";
+
+// Spread `importOriginal` so other child_process exports (spawn, exec, etc.)
+// keep their real implementations. A bare replacement here would silently
+// break any sibling test that imports anything else from this module.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: vi.fn(() => {
+      throw new Error("no keychain entry");
+    }),
+  };
+});
+
+import { execFileSync } from "node:child_process";
+import { precheckLineage } from "@/lib/cli-precheck";
 
 let dbPath: string;
 let fakeHome: string;
@@ -36,16 +51,31 @@ beforeEach(async () => {
   fakeHome = path.join(os.tmpdir(), `chorus-fakehome-${randomUUID()}`);
   fs.mkdirSync(fakeHome, { recursive: true });
   process.env.HOME = fakeHome;
+
+  // Default the keychain mock to "no entry" — tests that want a present
+  // entry override per-call via mockReturnValueOnce.
+  vi.mocked(execFileSync).mockReset();
+  vi.mocked(execFileSync).mockImplementation(() => {
+    throw new Error("no keychain entry");
+  });
 });
 
 afterEach(async () => {
   await _resetDbForTests();
-  for (const suffix of ['', '-shm', '-wal']) {
-    try { fs.unlinkSync(dbPath + suffix); } catch { /* best-effort */ }
+  for (const suffix of ["", "-shm", "-wal"]) {
+    try {
+      fs.unlinkSync(dbPath + suffix);
+    } catch {
+      /* best-effort */
+    }
   }
   delete process.env.CHORUS_DB_PATH;
 
-  try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  try {
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
   if (realHome) process.env.HOME = realHome;
   else delete process.env.HOME;
 });
@@ -57,96 +87,241 @@ function writeFakeCred(relPath: string, content = '{"oauth":"fake"}'): void {
   fs.writeFileSync(full, content);
 }
 
-describe('precheckLineage', () => {
-  describe('quota gate', () => {
-    it('blocks when quota_exhausted with future resetAt', async () => {
-      writeFakeCred('.claude/.credentials.json');
+describe("precheckLineage", () => {
+  describe("quota gate", () => {
+    it("blocks when quota_exhausted with future resetAt", async () => {
+      writeFakeCred(".claude/.credentials.json");
       await recordHealth({
-        lineage: 'anthropic',
-        status: 'quota_exhausted',
+        lineage: "anthropic",
+        status: "quota_exhausted",
         resetAt: Date.now() + 60 * 60_000, // +1h
       });
-      const result = await precheckLineage('anthropic');
+      const result = await precheckLineage("anthropic");
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.reason).toBe('quota_exhausted');
+        expect(result.reason).toBe("quota_exhausted");
         expect(result.resetAt).toBeGreaterThan(Date.now());
       }
     });
 
-    it('falls through when quota_exhausted with past resetAt (stale marker)', async () => {
-      writeFakeCred('.claude/.credentials.json');
+    it("falls through when quota_exhausted with past resetAt (stale marker)", async () => {
+      writeFakeCred(".claude/.credentials.json");
       await recordHealth({
-        lineage: 'anthropic',
-        status: 'quota_exhausted',
+        lineage: "anthropic",
+        status: "quota_exhausted",
         resetAt: Date.now() - 60_000, // 1m ago
       });
-      const result = await precheckLineage('anthropic');
+      const result = await precheckLineage("anthropic");
       expect(result.ok).toBe(true);
     });
 
-    it('falls through when quota_exhausted has no resetAt', async () => {
-      writeFakeCred('.claude/.credentials.json');
+    it("falls through when quota_exhausted has no resetAt", async () => {
+      writeFakeCred(".claude/.credentials.json");
       await recordHealth({
-        lineage: 'anthropic',
-        status: 'quota_exhausted',
+        lineage: "anthropic",
+        status: "quota_exhausted",
         // resetAt omitted
       });
-      const result = await precheckLineage('anthropic');
+      const result = await precheckLineage("anthropic");
       expect(result.ok).toBe(true);
     });
 
-    it('passes when health is healthy / unknown', async () => {
-      writeFakeCred('.claude/.credentials.json');
-      const result = await precheckLineage('anthropic');
+    it("passes when health is healthy / unknown", async () => {
+      writeFakeCred(".claude/.credentials.json");
+      const result = await precheckLineage("anthropic");
       expect(result.ok).toBe(true);
     });
   });
 
-  describe('cred gate', () => {
-    it('blocks when no credential file exists for the lineage', async () => {
+  describe("cred gate", () => {
+    it("blocks when no credential file exists for the lineage", async () => {
       // No fake creds written for openai
-      const result = await precheckLineage('openai');
+      const result = await precheckLineage("openai");
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.reason).toBe('auth_missing');
+        expect(result.reason).toBe("auth_missing");
         expect(result.cta).toMatch(/codex login/i);
       }
     });
 
-    it('blocks when credential file is zero bytes (treated as not logged in)', async () => {
-      writeFakeCred('.codex/auth.json', '');
-      const result = await precheckLineage('openai');
+    it("blocks when credential file is zero bytes (treated as not logged in)", async () => {
+      writeFakeCred(".codex/auth.json", "");
+      const result = await precheckLineage("openai");
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe('auth_missing');
+      if (!result.ok) expect(result.reason).toBe("auth_missing");
     });
 
-    it('passes when credential file exists for any candidate path', async () => {
-      writeFakeCred('.codex/auth.json');
-      const result = await precheckLineage('openai');
+    it("passes when credential file exists for any candidate path", async () => {
+      writeFakeCred(".codex/auth.json");
+      const result = await precheckLineage("openai");
       expect(result.ok).toBe(true);
     });
 
-    it('passes when fallback candidate path exists (google)', async () => {
+    it("passes when fallback candidate path exists (google)", async () => {
       // Primary path does not exist, fallback at .config/gemini/oauth_creds.json does
-      writeFakeCred('.config/gemini/oauth_creds.json');
-      const result = await precheckLineage('google');
+      writeFakeCred(".config/gemini/oauth_creds.json");
+      const result = await precheckLineage("google");
       expect(result.ok).toBe(true);
     });
 
-    it('per-lineage CTA mentions the right login command', async () => {
-      const cases: Array<{ lineage: 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot'; needle: RegExp }> = [
-        { lineage: 'anthropic', needle: /claude login/i },
-        { lineage: 'openai', needle: /codex login/i },
-        { lineage: 'google', needle: /gemini/i },
-        { lineage: 'opencode', needle: /opencode/i },
-        { lineage: 'moonshot', needle: /kimi|opencode/i },
+    it("per-lineage CTA mentions the right login command", async () => {
+      const cases: Array<{
+        lineage: "anthropic" | "openai" | "google" | "opencode" | "moonshot";
+        needle: RegExp;
+      }> = [
+        { lineage: "anthropic", needle: /claude login/i },
+        { lineage: "openai", needle: /codex login/i },
+        { lineage: "google", needle: /gemini/i },
+        { lineage: "opencode", needle: /opencode/i },
+        { lineage: "moonshot", needle: /kimi|opencode/i },
       ];
       for (const c of cases) {
         const result = await precheckLineage(c.lineage);
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.cta).toMatch(c.needle);
       }
+    });
+  });
+
+  // Claude Code v2+ stores OAuth credentials in the macOS Keychain under the
+  // service `Claude Code-credentials` rather than on disk. The file-only
+  // probe regressed to a false-positive auth_missing on every spawn. Pre-
+  // check now falls back to a `security find-generic-password` probe for
+  // the anthropic lineage on darwin. Upstream issue #7 / PR #8.
+  describe("keychain fallback (macOS)", () => {
+    const mockExecFileSync = vi.mocked(execFileSync);
+    let originalPlatform: string;
+
+    beforeEach(() => {
+      originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "darwin" });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
+    it("passes when no cred file but keychain entry exists", async () => {
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(""));
+
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials"],
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+    });
+
+    it("blocks when no cred file and no keychain entry", async () => {
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("auth_missing");
+    });
+
+    it("skips keychain check when cred file exists", async () => {
+      writeFakeCred(".claude/.credentials.json");
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).not.toHaveBeenCalled();
+    });
+
+    it("does not consult keychain for non-anthropic lineages", async () => {
+      // openai has no cred file in the fake home → should fail auth_missing
+      // WITHOUT ever shelling out to `security`. The fork's keychain probe
+      // is gated to anthropic only (Claude Code is the only CLI on darwin
+      // that's moved its bearer into the Keychain).
+      const result = await precheckLineage("openai");
+      expect(result.ok).toBe(false);
+      expect(mockExecFileSync).not.toHaveBeenCalled();
+    });
+
+    // Claude Code v2.x writes OAuth creds under two service names depending
+    // on auth flow: `Claude Code-credentials` for Pro/Max OAuth, and `Claude
+    // Code` (no suffix) for API-key + some Console-account flows. The
+    // single-service probe regressed to auth_missing for the API-key flow.
+    // Upstream issue #38.
+    it("falls back to 'Claude Code' service when 'Claude Code-credentials' is absent", async () => {
+      // First call (Claude Code-credentials) throws, second (Claude Code) succeeds.
+      mockExecFileSync
+        .mockImplementationOnce(() => {
+          throw new Error("no entry");
+        })
+        .mockReturnValueOnce(Buffer.from(""));
+
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+      expect(mockExecFileSync).toHaveBeenNthCalledWith(
+        1,
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials"],
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+      expect(mockExecFileSync).toHaveBeenNthCalledWith(
+        2,
+        "security",
+        ["find-generic-password", "-s", "Claude Code"],
+        expect.objectContaining({ stdio: "ignore" }),
+      );
+    });
+
+    it("short-circuits on first matching service (no second probe)", async () => {
+      // First service ("Claude Code-credentials") succeeds → second probe
+      // must not run, otherwise we'd pay the `security` shell-out cost
+      // twice on every healthy spawn.
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(""));
+
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails only when both keychain services are absent", async () => {
+      // Default mock throws on every call → both probes fail → auth_missing.
+      const result = await precheckLineage("anthropic");
+      expect(result.ok).toBe(false);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+      if (!result.ok) expect(result.reason).toBe("auth_missing");
+    });
+  });
+
+  describe("grok env-var auth (GROK_CODE_XAI_API_KEY)", () => {
+    let savedKey: string | undefined;
+
+    beforeEach(() => {
+      savedKey = process.env.GROK_CODE_XAI_API_KEY;
+    });
+
+    afterEach(() => {
+      if (savedKey === undefined) delete process.env.GROK_CODE_XAI_API_KEY;
+      else process.env.GROK_CODE_XAI_API_KEY = savedKey;
+    });
+
+    it("returns ok when GROK_CODE_XAI_API_KEY is set even without ~/.grok/auth.json", async () => {
+      // No auth.json on disk — would normally fail. The env var short-
+      // circuits the file probe so users on CI (where grok login can't
+      // run interactively) still pass precheck.
+      process.env.GROK_CODE_XAI_API_KEY = "xai-test-key";
+      const result = await precheckLineage("grok");
+      expect(result.ok).toBe(true);
+    });
+
+    it("falls back to file probe when env var is unset", async () => {
+      delete process.env.GROK_CODE_XAI_API_KEY;
+      const result = await precheckLineage("grok");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("auth_missing");
+        expect(result.cta).toMatch(/grok login|GROK_CODE_XAI_API_KEY/);
+      }
+    });
+
+    it("passes precheck when ~/.grok/auth.json exists even without env var", async () => {
+      delete process.env.GROK_CODE_XAI_API_KEY;
+      writeFakeCred(".grok/auth.json");
+      const result = await precheckLineage("grok");
+      expect(result.ok).toBe(true);
     });
   });
 });

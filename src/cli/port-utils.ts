@@ -1,7 +1,7 @@
-import { execFileSync, execSync } from 'child_process';
-import fs from 'fs';
-import net from 'net';
-import { sym } from './ui.js';
+import { execFileSync, execSync } from "child_process";
+import fs from "fs";
+import net from "net";
+import { sym } from "./ui.js";
 
 /**
  * Probe whether anything is listening on a TCP port on 127.0.0.1.
@@ -14,7 +14,7 @@ import { sym } from './ui.js';
  */
 export function isPortInUse(
   port: number,
-  host = '127.0.0.1',
+  host = "127.0.0.1",
   timeoutMs = 500,
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -31,9 +31,9 @@ export function isPortInUse(
       resolve(inUse);
     };
     sock.setTimeout(timeoutMs);
-    sock.once('connect', () => finish(true));
-    sock.once('timeout', () => finish(false));
-    sock.once('error', () => finish(false));
+    sock.once("connect", () => finish(true));
+    sock.once("timeout", () => finish(false));
+    sock.once("error", () => finish(false));
     sock.connect(port, host);
   });
 }
@@ -73,8 +73,9 @@ export function findPidsOnPort(port: number): number[] {
   for (const { cmd, parse } of candidates) {
     try {
       const out = execSync(cmd, {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
       });
       const pids = parse(out);
       if (pids.length > 0) return Array.from(new Set(pids));
@@ -104,7 +105,7 @@ export function findPidsOnPortWithSudo(port: number): number[] {
       // is safe (no shell interpolation). Numeric port is type-checked
       // by the caller via TypeScript, but argv-style invocation makes
       // even an untrusted port literal harmless.
-      argv: ['-n', 'ss', '-ltnp', `sport = :${port}`],
+      argv: ["-n", "ss", "-ltnp", `sport = :${port}`],
       parse: (out) => {
         const pids: number[] = [];
         for (const m of out.matchAll(/pid=(\d+)/g)) {
@@ -115,7 +116,7 @@ export function findPidsOnPortWithSudo(port: number): number[] {
       },
     },
     {
-      argv: ['-n', 'lsof', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'],
+      argv: ["-n", "lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
       parse: (out) =>
         out
           .split(/\s+/)
@@ -125,9 +126,10 @@ export function findPidsOnPortWithSudo(port: number): number[] {
   ];
   for (const { argv, parse } of candidates) {
     try {
-      const out = execFileSync('sudo', argv, {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
+      const out = execFileSync("sudo", argv, {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
       });
       const pids = parse(out);
       if (pids.length > 0) return Array.from(new Set(pids));
@@ -164,27 +166,27 @@ export async function killWithSudoAndVerify(
       // EPERM = process exists, owned by another uid → still alive.
       // ESRCH = no such process → gone.
       const code = (err as NodeJS.ErrnoException).code;
-      return code === 'EPERM';
+      return code === "EPERM";
     }
   };
   if (!isAlive()) return true;
-  const sudoKill = (signal: 'TERM' | 'KILL'): void => {
+  const sudoKill = (signal: "TERM" | "KILL"): void => {
     try {
-      execFileSync('sudo', ['-n', 'kill', `-${signal}`, String(pid)], {
-        stdio: 'ignore',
+      execFileSync("sudo", ["-n", "kill", `-${signal}`, String(pid)], {
+        stdio: "ignore",
       });
     } catch {
       /* sudo prompt would block — fall through to liveness probe */
     }
   };
-  sudoKill('TERM');
+  sudoKill("TERM");
 
   const deadline = Date.now() + gracefulMs;
   while (Date.now() < deadline) {
     if (!isAlive()) return true;
     await new Promise((r) => setTimeout(r, 100));
   }
-  sudoKill('KILL');
+  sudoKill("KILL");
   await new Promise((r) => setTimeout(r, 200));
   if (!isAlive()) return true;
   console.warn(
@@ -206,7 +208,7 @@ function readCmdline(pid: number): string | null {
     if (fs.existsSync(procPath)) {
       // /proc/<pid>/cmdline is NUL-separated argv. Replace with spaces
       // so we can substring-match against the joined invocation.
-      return fs.readFileSync(procPath, 'utf-8').replace(/ /g, ' ').trim();
+      return fs.readFileSync(procPath, "utf-8").replace(/ /g, " ").trim();
     }
   } catch {
     /* race with process exit, fall through to ps */
@@ -215,9 +217,9 @@ function readCmdline(pid: number): string | null {
     // execFileSync over execSync so a future loosening of `pid`'s
     // numeric type can't slip into a shell command-injection. argv
     // goes straight to ps without an intermediate sh -c.
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
     });
     const trimmed = out.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -233,8 +235,8 @@ function readCmdline(pid: number): string | null {
  * for both cmdline and cwd checks.
  */
 function pathHasChorusSegment(somePath: string): boolean {
-  const segs = somePath.split('/');
-  return segs.includes('chorus') || segs.includes('chorus-codes');
+  const segs = somePath.split("/");
+  return segs.includes("chorus") || segs.includes("chorus-codes");
 }
 
 function cmdlineHasChorusSegment(cmdline: string): boolean {
@@ -281,14 +283,14 @@ export function pidLooksLikeChorus(pid: number): {
   // `cmdline.includes('chorus/dist/...')` would match
   // `/x/notchorus/dist/...` or `/x/mychorus-fork/dist/...`.
   const markers = [
-    '/chorus/dist/daemon/index.js',
-    '/chorus/src/daemon/index.ts',
-    '/chorus/bin/chorus.mjs',
-    '/chorus/dist/cli/index.js',
-    '/chorus-codes/dist/daemon/index.js',
-    '/chorus-codes/src/daemon/index.ts',
-    '/chorus-codes/bin/chorus.mjs',
-    '/chorus-codes/dist/cli/index.js',
+    "/chorus/dist/daemon/index.js",
+    "/chorus/src/daemon/index.ts",
+    "/chorus/bin/chorus.mjs",
+    "/chorus/dist/cli/index.js",
+    "/chorus-codes/dist/daemon/index.js",
+    "/chorus-codes/src/daemon/index.ts",
+    "/chorus-codes/bin/chorus.mjs",
+    "/chorus-codes/dist/cli/index.js",
   ];
   if (markers.some((m) => cmdline.includes(m))) return { match: true, cmdline };
 
@@ -303,7 +305,7 @@ export function pidLooksLikeChorus(pid: number): {
   // so /home/user/chorus-experiments/marketing-site doesn't mistakenly
   // match.
   const nextLauncher =
-    cmdline.includes('next-server') ||
+    cmdline.includes("next-server") ||
     /node_modules\/next\/dist\/bin\/next (start|dev)/.test(cmdline);
   if (nextLauncher) {
     if (cmdlineHasChorusSegment(cmdline)) return { match: true, cmdline };
@@ -335,9 +337,9 @@ function readCwd(pid: number): string | null {
     /* permission denied or process gone — fall through to sudo */
   }
   try {
-    const out = execFileSync('sudo', ['-n', 'readlink', `/proc/${pid}/cwd`], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const out = execFileSync("sudo", ["-n", "readlink", `/proc/${pid}/cwd`], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
     });
     const trimmed = out.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -367,7 +369,7 @@ export async function killAndVerify(
   };
   if (!isAlive()) return true;
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(pid, "SIGTERM");
   } catch {
     /* gone already */
   }
@@ -379,7 +381,7 @@ export async function killAndVerify(
   }
   // Stubborn — escalate.
   try {
-    process.kill(pid, 'SIGKILL');
+    process.kill(pid, "SIGKILL");
   } catch {
     /* may already be dead */
   }
@@ -390,4 +392,3 @@ export async function killAndVerify(
   );
   return false;
 }
-

@@ -24,7 +24,7 @@
     "start:daemon": "node dist/daemon/index.js",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "build:server": "tsc -p tsconfig.server.json && node -e \"require('fs').mkdirSync('dist/lib/db',{recursive:true});require('fs').copyFileSync('src/lib/db/schema.sql','dist/lib/db/schema.sql')\"",
+    "build:server": "tsc -p tsconfig.server.json && node -e \"const fs=require('fs'),path=require('path');fs.mkdirSync('dist/lib/db',{recursive:true});fs.copyFileSync('src/lib/db/schema.sql','dist/lib/db/schema.sql');fs.mkdirSync('dist/daemon/presets',{recursive:true});for(const f of fs.readdirSync('src/daemon/presets')){if(f.endsWith('.md'))fs.copyFileSync(path.join('src/daemon/presets',f),path.join('dist/daemon/presets',f))}\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

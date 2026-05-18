@@ -11,7 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { FallbackSwap, ParticipantSnapshot, ParticipantState } from "./types";
+import type {
+  FallbackSwap,
+  ParticipantSnapshot,
+  ParticipantState,
+} from "./types";
 import type { ReviewerLineage } from "@/lib/types";
 
 /**
@@ -132,7 +136,9 @@ export function ParticipantCard({
               state === "working" ? "animate-pulse-soft" : ""
             }`}
           />
-          <span className="font-medium capitalize text-foreground">{participant.role}</span>
+          <span className="font-medium capitalize text-foreground">
+            {participant.role}
+          </span>
           <span className="text-muted-foreground">·</span>
           <span className="uppercase tracking-wider text-muted-foreground">
             {uiLineageLabel(ui)}
@@ -202,66 +208,70 @@ export function ParticipantCard({
         </div>
       </div>
 
-      {swaps && swaps.length > 0 && (() => {
-        // Only the LAST entry's `to` voice actually produced an answer;
-        // intermediate `to` voices were attempted and themselves failed
-        // (which is what triggered the next swap). Showing "actually ran"
-        // on every row is wrong for chains of length > 1.
-        const sorted = swaps.slice().sort((a, b) => a.fallbackIdx - b.fallbackIdx);
-        return (
-          <div className="space-y-1.5 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px]">
-            {sorted.map((s, i) => {
-              const isCross = s.reason === "lineage_fallback";
-              const isLast = i === sorted.length - 1;
-              return (
-                <div
-                  key={`${s.fromLineage}-${s.fromModel}-${i}`}
-                  className="flex items-start gap-2"
-                >
-                  <Shuffle className="mt-0.5 h-3 w-3 shrink-0 text-amber-300" />
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <div className="font-medium uppercase tracking-wider text-[10px] text-amber-300">
-                      {isCross ? "Cross-lineage fallback" : "Model fallback"}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-amber-100/90">
-                      <span className="text-amber-100/60 line-through">
-                        {s.fromLineage}/{s.fromModel}
-                      </span>
-                      <ArrowRight className="h-3 w-3 shrink-0 text-amber-300" />
-                      <span
-                        className={
-                          isLast
-                            ? "font-medium text-amber-100"
-                            : "text-amber-100/60 line-through"
-                        }
-                      >
-                        {s.toLineage}/{s.toModel}
-                      </span>
-                      {isLast && (
-                        <span className="rounded bg-amber-500/15 px-1 py-0.5 font-mono text-[9px] text-amber-200">
-                          actually ran
+      {swaps &&
+        swaps.length > 0 &&
+        (() => {
+          // Only the LAST entry's `to` voice actually produced an answer;
+          // intermediate `to` voices were attempted and themselves failed
+          // (which is what triggered the next swap). Showing "actually ran"
+          // on every row is wrong for chains of length > 1.
+          const sorted = swaps
+            .slice()
+            .sort((a, b) => a.fallbackIdx - b.fallbackIdx);
+          return (
+            <div className="space-y-1.5 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px]">
+              {sorted.map((s, i) => {
+                const isCross = s.reason === "lineage_fallback";
+                const isLast = i === sorted.length - 1;
+                return (
+                  <div
+                    key={`${s.fromLineage}-${s.fromModel}-${i}`}
+                    className="flex items-start gap-2"
+                  >
+                    <Shuffle className="mt-0.5 h-3 w-3 shrink-0 text-amber-300" />
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="font-medium uppercase tracking-wider text-[10px] text-amber-300">
+                        {isCross ? "Cross-lineage fallback" : "Model fallback"}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-amber-100/90">
+                        <span className="text-amber-100/60 line-through">
+                          {s.fromLineage}/{s.fromModel}
                         </span>
-                      )}
-                    </div>
-                    {s.fromErrorKind && (
-                      <div className="text-[10px] text-amber-200/75">
-                        <span className="font-mono uppercase tracking-wider text-amber-300/90">
-                          {s.fromErrorKind}
+                        <ArrowRight className="h-3 w-3 shrink-0 text-amber-300" />
+                        <span
+                          className={
+                            isLast
+                              ? "font-medium text-amber-100"
+                              : "text-amber-100/60 line-through"
+                          }
+                        >
+                          {s.toLineage}/{s.toModel}
                         </span>
-                        {s.fromErrorMessage && (
-                          <span className="ml-1.5 text-amber-100/80">
-                            — {s.fromErrorMessage}
+                        {isLast && (
+                          <span className="rounded bg-amber-500/15 px-1 py-0.5 font-mono text-[9px] text-amber-200">
+                            actually ran
                           </span>
                         )}
                       </div>
-                    )}
+                      {s.fromErrorKind && (
+                        <div className="text-[10px] text-amber-200/75">
+                          <span className="font-mono uppercase tracking-wider text-amber-300/90">
+                            {s.fromErrorKind}
+                          </span>
+                          {s.fromErrorMessage && (
+                            <span className="ml-1.5 text-amber-100/80">
+                              — {s.fromErrorMessage}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })()}
+                );
+              })}
+            </div>
+          );
+        })()}
 
       {participant.warnings && participant.warnings.length > 0 && (
         <div className="space-y-1 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px] text-amber-200/90">
@@ -282,7 +292,8 @@ export function ParticipantCard({
       )}
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">
-        {participant.findingsPreview && participant.findingsPreview.length > 0 ? (
+        {participant.findingsPreview &&
+        participant.findingsPreview.length > 0 ? (
           participant.findingsPreview.map((line, i) => (
             <div key={i} className="py-0.5 text-foreground/90">
               {line}
@@ -363,7 +374,9 @@ export function ParticipantCard({
       </div>
 
       <div className="flex items-center justify-between gap-3 border-t border-border bg-card/60 px-4 py-2 font-mono text-[10px] text-muted-foreground">
-        <span className="truncate">{participant.binaryUsed ?? participant.agentName}</span>
+        <span className="truncate">
+          {participant.binaryUsed ?? participant.agentName}
+        </span>
         <span className="flex shrink-0 items-center gap-2">
           {participant.durationMs !== undefined && (
             <span title="Wall-clock time the CLI took to finish.">
@@ -454,7 +467,9 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-function formatTokens(u: NonNullable<ParticipantSnapshot["usage"]>): string | null {
+function formatTokens(
+  u: NonNullable<ParticipantSnapshot["usage"]>,
+): string | null {
   const total = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
   if (total <= 0) return null;
   if (total < 1000) return `${total} tok`;
@@ -463,8 +478,10 @@ function formatTokens(u: NonNullable<ParticipantSnapshot["usage"]>): string | nu
 
 function tokensTitle(u: NonNullable<ParticipantSnapshot["usage"]>): string {
   const parts: string[] = [];
-  if (u.inputTokens !== undefined) parts.push(`in ${u.inputTokens.toLocaleString()}`);
-  if (u.outputTokens !== undefined) parts.push(`out ${u.outputTokens.toLocaleString()}`);
+  if (u.inputTokens !== undefined)
+    parts.push(`in ${u.inputTokens.toLocaleString()}`);
+  if (u.outputTokens !== undefined)
+    parts.push(`out ${u.outputTokens.toLocaleString()}`);
   if (u.cachedInputTokens !== undefined)
     parts.push(`cached ${u.cachedInputTokens.toLocaleString()}`);
   return parts.join(" · ");
@@ -489,7 +506,13 @@ function parseFailureSummary(
   answer: string | undefined,
 ): { kind: string; message: string; cta?: string; resetAt?: number } | null {
   if (!answer) return null;
-  const trimmed = answer.trimStart();
+  // Cap the regex input at 16 KiB. Reviewer answers can be up to 256 KB;
+  // running multiple regex scans across the full string blocked the UI
+  // thread when reviewers wrote long approvals. The failure header
+  // block is always at the very top of the file (runReviewerHeadless /
+  // runDoerHeadless write it via fs.writeFileSync at the start of the
+  // failure path), so this slice never loses signal.
+  const trimmed = answer.slice(0, 16 * 1024).trimStart();
   if (!/^##\s+(?:REVIEWER|DOER)\s+FAILED/i.test(trimmed)) return null;
   const kindMatch = trimmed.match(/\*\*Kind:\*\*\s*(.+?)(?:\n|$)/);
   const kind = kindMatch ? kindMatch[1].trim() : "failed";

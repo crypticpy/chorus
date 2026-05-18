@@ -1,9 +1,9 @@
-import { execFileSync, spawn } from 'child_process';
-import type { Command } from 'commander';
-import fs from 'fs';
-import open from 'open';
-import os from 'os';
-import path from 'path';
+import { execFileSync, spawn } from "child_process";
+import type { Command } from "commander";
+import fs from "fs";
+import { openBrowser } from "../open-browser.js";
+import os from "os";
+import path from "path";
 import {
   COCKPIT_PORT_RANGE,
   DAEMON_PORT_RANGE,
@@ -13,7 +13,7 @@ import {
   pickFreePort,
   readLiveDaemonInfo,
   writeDaemonInfo,
-} from '../../lib/daemon-discovery.js';
+} from "../../lib/daemon-discovery.js";
 import {
   findPidsOnPort,
   findPidsOnPortWithSudo,
@@ -21,15 +21,15 @@ import {
   killAndVerify,
   killWithSudoAndVerify,
   pidLooksLikeChorus,
-} from '../port-utils.js';
-import { detectRuntimeEnv, shouldAutoOpenBrowser } from '../runtime-env.js';
-import { pkg } from '../shared.js';
-import { c, header, sym, tip } from '../ui.js';
+} from "../port-utils.js";
+import { detectRuntimeEnv, shouldAutoOpenBrowser } from "../runtime-env.js";
+import { pkg } from "../shared.js";
+import { c, header, sym, tip } from "../ui.js";
 import {
   fetchLatestVersion,
   resolveChorusBinaryPath,
   versionGreater,
-} from './update.js';
+} from "./update.js";
 
 interface PortPair {
   daemonPort: number;
@@ -38,88 +38,89 @@ interface PortPair {
 
 export function registerStartCommand(program: Command): void {
   program
-    .command('start')
-    .option('--ui', 'Open browser UI after starting daemon')
-    .option('--daemon-only', 'Skip cockpit (Next.js UI). Used by MCP auto-start.')
-    .description('Start the Chorus daemon (PM2-style fork)')
-    .action(
-      async (options: { ui?: boolean; daemonOnly?: boolean }) => {
-        try {
-          const chorusDir = path.join(os.homedir(), '.chorus');
+    .command("start")
+    .option("--ui", "Open browser UI after starting daemon")
+    .option(
+      "--daemon-only",
+      "Skip cockpit (Next.js UI). Used by MCP auto-start.",
+    )
+    .description("Start the Chorus daemon (PM2-style fork)")
+    .action(async (options: { ui?: boolean; daemonOnly?: boolean }) => {
+      try {
+        const chorusDir = path.join(os.homedir(), ".chorus");
 
-          // First-pass already-running check. If a daemon is up AND
-          // (we don't need the cockpit OR the cockpit is also up),
-          // bail out. Otherwise fall through to the upgrade path
-          // below.
-          const alreadyHandled = await alreadyRunningHealthy(options.ui);
-          if (alreadyHandled === 'satisfied') return;
+        // First-pass already-running check. If a daemon is up AND
+        // (we don't need the cockpit OR the cockpit is also up),
+        // bail out. Otherwise fall through to the upgrade path
+        // below.
+        const alreadyHandled = await alreadyRunningHealthy(options.ui);
+        if (alreadyHandled === "satisfied") return;
 
-          // Upgrade path: daemon is healthy but cockpit isn't running
-          // and the user asked for --ui. Spawn just the cockpit and
-          // update daemon.json. No need to acquire the start.lock —
-          // we're not racing another start, just attaching the missing
-          // process.
-          if (alreadyHandled === 'cockpit_missing_ui_requested') {
+        // Upgrade path: daemon is healthy but cockpit isn't running
+        // and the user asked for --ui. Spawn just the cockpit and
+        // update daemon.json. No need to acquire the start.lock —
+        // we're not racing another start, just attaching the missing
+        // process.
+        if (alreadyHandled === "cockpit_missing_ui_requested") {
+          await spawnCockpitForExistingDaemon(chorusDir);
+          return;
+        }
+
+        // Concurrent-start guard. Two MCP shims hitting auto-start
+        // simultaneously would otherwise both pickPortPair → spawn
+        // a daemon → write daemon.json. Whichever writes second
+        // overwrites the first, leaving an orphan listening on a
+        // forgotten port. Using O_EXCL on the lockfile means the
+        // loser fails fast and falls through to alreadyRunningHealthy
+        // on retry (after the winner finishes spawning).
+        const acquired = acquireStartLock(chorusDir);
+        if (!acquired) {
+          // Another start is in flight. Poll briefly for daemon.json
+          // to appear; if it shows up, we're done. If the lock is
+          // stale (owner PID dead), reclaim it. Never blindly steal
+          // the lock on timeout — the winner may just be slow.
+          await waitForAnotherStartToWin();
+          const second = await alreadyRunningHealthy(options.ui);
+          if (second === "satisfied") return;
+          if (second === "cockpit_missing_ui_requested") {
             await spawnCockpitForExistingDaemon(chorusDir);
             return;
           }
-
-          // Concurrent-start guard. Two MCP shims hitting auto-start
-          // simultaneously would otherwise both pickPortPair → spawn
-          // a daemon → write daemon.json. Whichever writes second
-          // overwrites the first, leaving an orphan listening on a
-          // forgotten port. Using O_EXCL on the lockfile means the
-          // loser fails fast and falls through to alreadyRunningHealthy
-          // on retry (after the winner finishes spawning).
-          const acquired = acquireStartLock(chorusDir);
-          if (!acquired) {
-            // Another start is in flight. Poll briefly for daemon.json
-            // to appear; if it shows up, we're done. If the lock is
-            // stale (owner PID dead), reclaim it. Never blindly steal
-            // the lock on timeout — the winner may just be slow.
-            await waitForAnotherStartToWin();
-            const second = await alreadyRunningHealthy(options.ui);
-            if (second === 'satisfied') return;
-            if (second === 'cockpit_missing_ui_requested') {
-              await spawnCockpitForExistingDaemon(chorusDir);
-              return;
-            }
-            // No winner appeared. Check whether the lock owner is
-            // actually dead before clearing — a slow but live winner
-            // must NOT be elbowed aside or both processes will spawn.
-            if (!isLockOwnerAlive(chorusDir)) {
-              clearStartLock(chorusDir);
-              if (!acquireStartLock(chorusDir)) {
-                throw new Error(
-                  'Could not reclaim stale start lock. Try `chorus stop` then retry.',
-                );
-              }
-            } else {
+          // No winner appeared. Check whether the lock owner is
+          // actually dead before clearing — a slow but live winner
+          // must NOT be elbowed aside or both processes will spawn.
+          if (!isLockOwnerAlive(chorusDir)) {
+            clearStartLock(chorusDir);
+            if (!acquireStartLock(chorusDir)) {
               throw new Error(
-                'Another `chorus start` is still running. If this persists, run `chorus stop` then retry.',
+                "Could not reclaim stale start lock. Try `chorus stop` then retry.",
               );
             }
+          } else {
+            throw new Error(
+              "Another `chorus start` is still running. If this persists, run `chorus stop` then retry.",
+            );
           }
-
-          try {
-            await reapOrphans();
-            warnIfTmuxMissing();
-            await captureAndPersistPath();
-
-            const ports = await pickPortPair();
-            await spawnDaemonAndCockpit(chorusDir, ports, {
-              daemonOnly: options.daemonOnly === true,
-            });
-            scheduleAutoOpenBrowser(options.ui, ports.cockpitPort);
-          } finally {
-            releaseStartLock(chorusDir);
-          }
-        } catch (error) {
-          console.error('Failed to start daemon:', error);
-          process.exit(1);
         }
-      },
-    );
+
+        try {
+          await reapOrphans();
+          warnIfTmuxMissing();
+          await captureAndPersistPath();
+
+          const ports = await pickPortPair();
+          await spawnDaemonAndCockpit(chorusDir, ports, {
+            daemonOnly: options.daemonOnly === true,
+          });
+          scheduleAutoOpenBrowser(options.ui, ports.cockpitPort);
+        } finally {
+          releaseStartLock(chorusDir);
+        }
+      } catch (error) {
+        console.error("Failed to start daemon:", error);
+        process.exit(1);
+      }
+    });
 }
 
 /**
@@ -129,10 +130,10 @@ export function registerStartCommand(program: Command): void {
  */
 function acquireStartLock(chorusDir: string): boolean {
   fs.mkdirSync(chorusDir, { recursive: true });
-  const lockPath = path.join(chorusDir, 'start.lock');
+  const lockPath = path.join(chorusDir, "start.lock");
   try {
     // 'wx' = O_CREAT | O_EXCL | O_WRONLY. Atomic create-or-fail.
-    const fd = fs.openSync(lockPath, 'wx');
+    const fd = fs.openSync(lockPath, "wx");
     fs.writeSync(fd, String(process.pid));
     fs.closeSync(fd);
     return true;
@@ -142,7 +143,7 @@ function acquireStartLock(chorusDir: string): boolean {
 }
 
 function releaseStartLock(chorusDir: string): void {
-  const lockPath = path.join(chorusDir, 'start.lock');
+  const lockPath = path.join(chorusDir, "start.lock");
   try {
     fs.unlinkSync(lockPath);
   } catch {
@@ -162,9 +163,9 @@ function clearStartLock(chorusDir: string): void {
  * to spawn daemons concurrently when the winner happened to be slow.
  */
 function isLockOwnerAlive(chorusDir: string): boolean {
-  const lockPath = path.join(chorusDir, 'start.lock');
+  const lockPath = path.join(chorusDir, "start.lock");
   try {
-    const raw = fs.readFileSync(lockPath, 'utf-8').trim();
+    const raw = fs.readFileSync(lockPath, "utf-8").trim();
     const pid = Number.parseInt(raw, 10);
     if (!Number.isFinite(pid) || pid <= 0) return false;
     return isPidAlive(pid);
@@ -196,9 +197,8 @@ async function waitForAnotherStartToWin(): Promise<void> {
  */
 async function captureAndPersistPath(): Promise<void> {
   try {
-    const { captureInteractivePath, persistCapturedPath } = await import(
-      '../../lib/runtime-path.js'
-    );
+    const { captureInteractivePath, persistCapturedPath } =
+      await import("../../lib/runtime-path.js");
     const captured = captureInteractivePath();
     if (captured) await persistCapturedPath(captured);
   } catch {
@@ -207,9 +207,9 @@ async function captureAndPersistPath(): Promise<void> {
 }
 
 type AlreadyRunningResult =
-  | 'satisfied' // healthy chorus + (no UI requested OR cockpit also up)
-  | 'cockpit_missing_ui_requested' // daemon up, cockpit NOT up, --ui flag set → upgrade path
-  | 'not_running'; // no live daemon
+  | "satisfied" // healthy chorus + (no UI requested OR cockpit also up)
+  | "cockpit_missing_ui_requested" // daemon up, cockpit NOT up, --ui flag set → upgrade path
+  | "not_running"; // no live daemon
 
 /**
  * Detect a healthy chorus already running on this host before we try
@@ -233,7 +233,7 @@ async function alreadyRunningHealthy(
   // slow on cold start (3-4s observed). We'd rather wait 5s once than
   // mis-diagnose a healthy daemon and pile a second one on top.
   const live = await readLiveDaemonInfo({ healthTimeoutMs: 5000 });
-  if (!live) return 'not_running';
+  if (!live) return "not_running";
 
   const cockpitRunning =
     live.cockpitPid !== null && isPidAlive(live.cockpitPid);
@@ -242,34 +242,44 @@ async function alreadyRunningHealthy(
   // caller to handle this without printing anything; the cockpit
   // spawn will print the URL when it lands.
   if (uiFlag && !cockpitRunning) {
-    return 'cockpit_missing_ui_requested';
+    return "cockpit_missing_ui_requested";
   }
 
-  console.log('');
+  console.log("");
   console.log(
-    header(sym.ok, 'Chorus is already running', `version ${live.version || pkg.version}`),
+    header(
+      sym.ok,
+      "Chorus is already running",
+      `version ${live.version || pkg.version}`,
+    ),
   );
   if (cockpitRunning) {
     const cockpitUrl = `http://127.0.0.1:${live.cockpitPort}`;
-    console.log('');
-    console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+    console.log("");
+    console.log(`   ${c.gray("Open")}  ${c.cyan(cockpitUrl)}`);
     const env = detectRuntimeEnv();
     if (env.hint) {
-      console.log('');
+      console.log("");
       console.log(tip(env.hint));
     }
-    console.log('');
+    console.log("");
     if (uiFlag && shouldAutoOpenBrowser(env)) {
-      open(cockpitUrl);
+      // Best-effort: a failed `open` shouldn't fail `chorus start` when the
+      // daemon + cockpit are already up. Matches scheduleAutoOpenBrowser.
+      await openBrowser(cockpitUrl).catch(() => {
+        /* URL already printed; user can open it manually. */
+      });
     }
   } else {
-    console.log('');
+    console.log("");
     console.log(
-      c.dim('   Daemon-only mode. Run `chorus start --ui` to bring up the cockpit.'),
+      c.dim(
+        "   Daemon-only mode. Run `chorus start --ui` to bring up the cockpit.",
+      ),
     );
-    console.log('');
+    console.log("");
   }
-  return 'satisfied';
+  return "satisfied";
 }
 
 /**
@@ -277,53 +287,50 @@ async function alreadyRunningHealthy(
  * new cockpitPid. Used when a `--daemon-only` daemon is already running
  * and the user now passes `--ui` to attach the UI without restarting.
  */
-async function spawnCockpitForExistingDaemon(
-  chorusDir: string,
-): Promise<void> {
+async function spawnCockpitForExistingDaemon(chorusDir: string): Promise<void> {
   const live = await readLiveDaemonInfo({ healthTimeoutMs: 5000 });
   if (!live) {
     // Edge case: daemon died between the alreadyRunningHealthy check
     // and this call. Caller's own logic will pick it up on retry.
-    throw new Error('Daemon disappeared while attaching cockpit. Retry `chorus start`.');
+    throw new Error(
+      "Daemon disappeared while attaching cockpit. Retry `chorus start`.",
+    );
   }
-  const packageRoot = path.resolve(__dirname, '..', '..', '..');
+  const packageRoot = path.resolve(__dirname, "..", "..", "..");
   const nextEntry = path.resolve(
     packageRoot,
-    'node_modules',
-    'next',
-    'dist',
-    'bin',
-    'next',
+    "node_modules",
+    "next",
+    "dist",
+    "bin",
+    "next",
   );
   if (
     !fs.existsSync(nextEntry) ||
-    !fs.existsSync(path.join(packageRoot, '.next'))
+    !fs.existsSync(path.join(packageRoot, ".next"))
   ) {
-    console.log('');
-    console.log(c.red('  ✗ Cockpit UI not found. Try `npm install -g chorus-codes` to repair.'));
-    console.log('');
+    console.log("");
+    console.log(
+      c.red(
+        "  ✗ Cockpit UI not found. Try `npm install -g chorus-codes` to repair.",
+      ),
+    );
+    console.log("");
     return;
   }
-  const logsDir = path.join(chorusDir, 'logs');
+  const logsDir = path.join(chorusDir, "logs");
   fs.mkdirSync(logsDir, { recursive: true });
-  const webLogPath = path.join(logsDir, 'web.log');
-  const webLogFd = fs.openSync(webLogPath, 'a');
-  const webPidFile = path.join(chorusDir, 'web.pid');
+  const webLogPath = path.join(logsDir, "web.log");
+  const webLogFd = fs.openSync(webLogPath, "a");
+  const webPidFile = path.join(chorusDir, "web.pid");
 
   const webChild = spawn(
-    'node',
-    [
-      nextEntry,
-      'start',
-      '-p',
-      String(live.cockpitPort),
-      '-H',
-      '127.0.0.1',
-    ],
+    "node",
+    [nextEntry, "start", "-p", String(live.cockpitPort), "-H", "127.0.0.1"],
     {
       cwd: packageRoot,
       detached: true,
-      stdio: ['ignore', webLogFd, webLogFd],
+      stdio: ["ignore", webLogFd, webLogFd],
       env: {
         ...process.env,
         CHORUS_DAEMON_URL: `http://127.0.0.1:${live.daemonPort}`,
@@ -332,7 +339,7 @@ async function spawnCockpitForExistingDaemon(
     },
   );
   if (!webChild.pid) {
-    throw new Error('Failed to spawn cockpit process');
+    throw new Error("Failed to spawn cockpit process");
   }
   fs.writeFileSync(webPidFile, webChild.pid.toString());
   webChild.unref();
@@ -348,21 +355,24 @@ async function spawnCockpitForExistingDaemon(
     version: live.version,
   });
 
-  console.log('');
+  console.log("");
   console.log(
-    header(sym.ok, 'Cockpit attached', `cockpit PID ${webChild.pid}`),
+    header(sym.ok, "Cockpit attached", `cockpit PID ${webChild.pid}`),
   );
   const cockpitUrl = `http://127.0.0.1:${live.cockpitPort}`;
-  console.log('');
-  console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+  console.log("");
+  console.log(`   ${c.gray("Open")}  ${c.cyan(cockpitUrl)}`);
   const env = detectRuntimeEnv();
   if (env.hint) {
-    console.log('');
+    console.log("");
     console.log(tip(env.hint));
   }
-  console.log('');
+  console.log("");
   if (shouldAutoOpenBrowser(env)) {
-    open(cockpitUrl);
+    // Best-effort — same rationale as the alreadyRunningHealthy branch above.
+    await openBrowser(cockpitUrl).catch(() => {
+      /* URL already printed; user can open it manually. */
+    });
   }
 }
 
@@ -374,8 +384,14 @@ async function spawnCockpitForExistingDaemon(
  * used.
  */
 async function pickPortPair(): Promise<PortPair> {
-  const preferredDaemon = parseEnvPort('CHORUS_DAEMON_PORT', DEFAULT_DAEMON_PORT);
-  const preferredCockpit = parseEnvPort('CHORUS_COCKPIT_PORT', DEFAULT_COCKPIT_PORT);
+  const preferredDaemon = parseEnvPort(
+    "CHORUS_DAEMON_PORT",
+    DEFAULT_DAEMON_PORT,
+  );
+  const preferredCockpit = parseEnvPort(
+    "CHORUS_COCKPIT_PORT",
+    DEFAULT_COCKPIT_PORT,
+  );
 
   const daemonPort = await pickFreePort(
     preferredDaemon,
@@ -383,7 +399,7 @@ async function pickPortPair(): Promise<PortPair> {
     isPortInUse,
   );
   if (daemonPort === null) {
-    failPortWalk('daemon', preferredDaemon, DAEMON_PORT_RANGE);
+    failPortWalk("daemon", preferredDaemon, DAEMON_PORT_RANGE);
   }
   const cockpitPort = await pickFreePort(
     preferredCockpit,
@@ -391,7 +407,7 @@ async function pickPortPair(): Promise<PortPair> {
     isPortInUse,
   );
   if (cockpitPort === null) {
-    failPortWalk('cockpit', preferredCockpit, COCKPIT_PORT_RANGE);
+    failPortWalk("cockpit", preferredCockpit, COCKPIT_PORT_RANGE);
   }
   return { daemonPort: daemonPort!, cockpitPort: cockpitPort! };
 }
@@ -405,25 +421,23 @@ function parseEnvPort(name: string, fallback: number): number {
 
 function failPortWalk(label: string, start: number, range: number): never {
   const end = start + range - 1;
-  console.log('');
+  console.log("");
   console.log(
     header(
       sym.err,
       `No free ${label} port in range :${start}–:${end}`,
-      'every candidate port is held by another process',
+      "every candidate port is held by another process",
     ),
   );
-  console.log('');
-  console.log(c.dim('  Find what owns these ports:'));
+  console.log("");
+  console.log(c.dim("  Find what owns these ports:"));
   for (let p = start; p <= end; p += 1) {
     console.log(`    sudo lsof -iTCP:${p} -sTCP:LISTEN`);
   }
-  console.log('');
-  console.log(c.dim('  Or pick a different starting port:'));
-  console.log(
-    `    CHORUS_${label.toUpperCase()}_PORT=<port> chorus start`,
-  );
-  console.log('');
+  console.log("");
+  console.log(c.dim("  Or pick a different starting port:"));
+  console.log(`    CHORUS_${label.toUpperCase()}_PORT=<port> chorus start`);
+  console.log("");
   process.exit(1);
 }
 
@@ -440,8 +454,8 @@ function failPortWalk(label: string, start: number, range: number): never {
  */
 async function reapOrphans(): Promise<void> {
   for (const [port, label] of [
-    [DEFAULT_DAEMON_PORT, 'daemon'],
-    [DEFAULT_COCKPIT_PORT, 'cockpit'],
+    [DEFAULT_DAEMON_PORT, "daemon"],
+    [DEFAULT_COCKPIT_PORT, "cockpit"],
   ] as const) {
     if (!(await isPortInUse(port))) continue;
 
@@ -455,7 +469,7 @@ async function reapOrphans(): Promise<void> {
     if (pids.length === 0) {
       // Couldn't see who owns the default port — the picker will walk
       // past it. Don't fail; just note it.
-      console.log('');
+      console.log("");
       console.log(
         c.dim(
           `  ${sym.info} Port :${port} is in use but the owner isn't visible. Will pick the next free port.`,
@@ -469,7 +483,7 @@ async function reapOrphans(): Promise<void> {
       if (!match) {
         // Foreign process on the default port — let the picker walk
         // past it. Don't fail.
-        console.log('');
+        console.log("");
         console.log(
           c.dim(
             `  ${sym.info} Port :${port} is held by ${cmdline ?? `PID ${pid}`} — will pick the next free port.`,
@@ -482,7 +496,7 @@ async function reapOrphans(): Promise<void> {
         : await killAndVerify(pid, `${label} orphan`);
       if (dead) {
         console.log(
-          `  ${sym.ok} reaped ${label} orphan on :${port} ${c.dim(`(PID ${pid}${needsSudoToKill ? ', cross-uid via sudo' : ''})`)}`,
+          `  ${sym.ok} reaped ${label} orphan on :${port} ${c.dim(`(PID ${pid}${needsSudoToKill ? ", cross-uid via sudo" : ""})`)}`,
         );
       }
     }
@@ -496,15 +510,15 @@ async function reapOrphans(): Promise<void> {
  */
 function warnIfTmuxMissing(): void {
   try {
-    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
+    execFileSync("tmux", ["-V"], { stdio: "ignore" });
   } catch {
-    console.log('');
+    console.log("");
     console.log(
       c.dim(
         `  ${sym.info} tmux not detected. Chorus runs headless by default — this is fine.`,
       ),
     );
-    console.log(c.dim('    Optional backup mode: install tmux, then open'));
+    console.log(c.dim("    Optional backup mode: install tmux, then open"));
     console.log(
       c.dim(
         '    /settings#transport in the cockpit and pick "Tmux — attach & take over".',
@@ -512,15 +526,15 @@ function warnIfTmuxMissing(): void {
     );
     console.log(
       c.dim(
-        '    `tmux attach -t <name>` lets you watch step-by-step or take over mid-run.',
+        "    `tmux attach -t <name>` lets you watch step-by-step or take over mid-run.",
       ),
     );
     console.log(
       c.dim(
-        '    macOS: brew install tmux · Ubuntu/Debian: apt install tmux · Fedora: dnf install tmux',
+        "    macOS: brew install tmux · Ubuntu/Debian: apt install tmux · Fedora: dnf install tmux",
       ),
     );
-    console.log('');
+    console.log("");
   }
 }
 
@@ -529,21 +543,29 @@ async function spawnDaemonAndCockpit(
   ports: PortPair,
   options: { daemonOnly: boolean } = { daemonOnly: false },
 ): Promise<void> {
-  const daemonJs = path.resolve(__dirname, '..', '..', 'daemon', 'index.js');
-  const daemonTs = path.resolve(__dirname, '..', '..', '..', 'src', 'daemon', 'index.ts');
+  const daemonJs = path.resolve(__dirname, "..", "..", "daemon", "index.js");
+  const daemonTs = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    "..",
+    "src",
+    "daemon",
+    "index.ts",
+  );
   const useCompiled = fs.existsSync(daemonJs);
   const daemonPath = useCompiled ? daemonJs : daemonTs;
-  const spawnArgs = useCompiled ? [daemonPath] : ['-r', 'tsx/cjs', daemonPath];
+  const spawnArgs = useCompiled ? [daemonPath] : ["-r", "tsx/cjs", daemonPath];
 
   fs.mkdirSync(chorusDir, { recursive: true });
-  const logsDir = path.join(chorusDir, 'logs');
+  const logsDir = path.join(chorusDir, "logs");
   fs.mkdirSync(logsDir, { recursive: true });
-  const daemonLogPath = path.join(logsDir, 'daemon.log');
-  const daemonLogFd = fs.openSync(daemonLogPath, 'a');
+  const daemonLogPath = path.join(logsDir, "daemon.log");
+  const daemonLogFd = fs.openSync(daemonLogPath, "a");
 
-  const child = spawn('node', spawnArgs, {
+  const child = spawn("node", spawnArgs, {
     detached: true,
-    stdio: ['ignore', daemonLogFd, daemonLogFd],
+    stdio: ["ignore", daemonLogFd, daemonLogFd],
     env: {
       ...process.env,
       CHORUS_DAEMON_PORT: String(ports.daemonPort),
@@ -552,22 +574,22 @@ async function spawnDaemonAndCockpit(
   });
 
   if (!child.pid) {
-    throw new Error('Failed to spawn daemon process');
+    throw new Error("Failed to spawn daemon process");
   }
 
-  const pidFile = path.join(chorusDir, 'daemon.pid');
+  const pidFile = path.join(chorusDir, "daemon.pid");
   fs.writeFileSync(pidFile, child.pid.toString());
 
-  const packageRoot = path.resolve(__dirname, '..', '..', '..');
+  const packageRoot = path.resolve(__dirname, "..", "..", "..");
   const nextEntry = path.resolve(
     packageRoot,
-    'node_modules',
-    'next',
-    'dist',
-    'bin',
-    'next',
+    "node_modules",
+    "next",
+    "dist",
+    "bin",
+    "next",
   );
-  const webPidFile = path.join(chorusDir, 'web.pid');
+  const webPidFile = path.join(chorusDir, "web.pid");
   let cockpitPid: number | null = null;
   if (options.daemonOnly) {
     // Skip cockpit spawn — used by MCP auto-start where the user
@@ -575,24 +597,17 @@ async function spawnDaemonAndCockpit(
     // editor to make tool calls.
   } else if (
     fs.existsSync(nextEntry) &&
-    fs.existsSync(path.join(packageRoot, '.next'))
+    fs.existsSync(path.join(packageRoot, ".next"))
   ) {
-    const webLogPath = path.join(logsDir, 'web.log');
-    const webLogFd = fs.openSync(webLogPath, 'a');
+    const webLogPath = path.join(logsDir, "web.log");
+    const webLogFd = fs.openSync(webLogPath, "a");
     const webChild = spawn(
-      'node',
-      [
-        nextEntry,
-        'start',
-        '-p',
-        String(ports.cockpitPort),
-        '-H',
-        '127.0.0.1',
-      ],
+      "node",
+      [nextEntry, "start", "-p", String(ports.cockpitPort), "-H", "127.0.0.1"],
       {
         cwd: packageRoot,
         detached: true,
-        stdio: ['ignore', webLogFd, webLogFd],
+        stdio: ["ignore", webLogFd, webLogFd],
         env: {
           ...process.env,
           // Tell the cockpit's server-side proxy where the daemon is.
@@ -609,23 +624,25 @@ async function spawnDaemonAndCockpit(
       webChild.unref();
     }
   } else {
-    console.log('');
-    console.log(c.red('  ✗ Cockpit UI not found.'));
-    if (fs.existsSync(path.join(packageRoot, 'src'))) {
-      console.log(c.dim('    This looks like a dev checkout. Build it once:'));
-      console.log(`    ${c.bold('pnpm install && pnpm build')}`);
+    console.log("");
+    console.log(c.red("  ✗ Cockpit UI not found."));
+    if (fs.existsSync(path.join(packageRoot, "src"))) {
+      console.log(c.dim("    This looks like a dev checkout. Build it once:"));
+      console.log(`    ${c.bold("pnpm install && pnpm build")}`);
     } else {
       console.log(
-        c.dim('    The published install should ship a built UI. Try reinstalling:'),
+        c.dim(
+          "    The published install should ship a built UI. Try reinstalling:",
+        ),
       );
-      console.log(`    ${c.bold('npm install -g chorus-codes')}`);
+      console.log(`    ${c.bold("npm install -g chorus-codes")}`);
     }
     console.log(
       c.dim(
         `    The daemon API is still up on port ${ports.daemonPort} if you only need MCP.`,
       ),
     );
-    console.log('');
+    console.log("");
   }
 
   // Wait for the daemon to answer health, THEN write daemon.json.
@@ -636,34 +653,30 @@ async function spawnDaemonAndCockpit(
 
   child.unref();
 
-  console.log('');
+  console.log("");
   console.log(
-    header(
-      sym.ok,
-      `Chorus started v${pkg.version}`,
-      `daemon PID ${child.pid}`,
-    ),
+    header(sym.ok, `Chorus started v${pkg.version}`, `daemon PID ${child.pid}`),
   );
   // Path of the resolved binary helps users diagnose multi-install
   // confusion (sudo npm install vs nvm-managed npm). Quiet by default
   // — only printed when running from a global install location, since
   // dev checkouts already know what binary they're running.
   const binPath = resolveChorusBinaryPath();
-  if (binPath && binPath.includes('node_modules')) {
-    console.log(`   ${c.dim('from')}  ${c.dim(binPath)}`);
+  if (binPath && binPath.includes("node_modules")) {
+    console.log(`   ${c.dim("from")}  ${c.dim(binPath)}`);
   }
 
   if (!options.daemonOnly) {
     const cockpitUrl = `http://127.0.0.1:${ports.cockpitPort}`;
-    console.log('');
-    console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+    console.log("");
+    console.log(`   ${c.gray("Open")}  ${c.cyan(cockpitUrl)}`);
     const env = detectRuntimeEnv();
     if (env.hint) {
-      console.log('');
+      console.log("");
       console.log(tip(env.hint));
     }
   }
-  console.log('');
+  console.log("");
 
   // Async update check — fires in the background so the start path is
   // never blocked on a network call. Prints a one-line nudge after
@@ -679,9 +692,9 @@ async function checkForUpdate(): Promise<void> {
     if (!latest) return;
     if (!versionGreater(latest, pkg.version)) return;
     console.log(
-      `   ${c.dim('•')} ${c.cyan(`chorus ${latest}`)} ${c.dim('is available — run')} ${c.cyan('chorus update')}`,
+      `   ${c.dim("•")} ${c.cyan(`chorus ${latest}`)} ${c.dim("is available — run")} ${c.cyan("chorus update")}`,
     );
-    console.log('');
+    console.log("");
   } catch {
     /* never block a healthy start on a network failure */
   }
@@ -739,8 +752,13 @@ function scheduleAutoOpenBrowser(
   cockpitPort: number,
 ): void {
   setTimeout(() => {
-    if (uiFlag && shouldAutoOpenBrowser(detectRuntimeEnv())) {
-      open(`http://127.0.0.1:${cockpitPort}`);
-    }
+    if (!uiFlag || !shouldAutoOpenBrowser(detectRuntimeEnv())) return;
+    // Catch the rejection here — a fire-and-forget setTimeout would
+    // surface an unhandled rejection on hosts where `open` can't find
+    // a browser (headless boxes, exotic envs).
+    openBrowser(`http://127.0.0.1:${cockpitPort}`).catch(() => {
+      // Best-effort browser open; ignore failures silently — the cockpit
+      // URL was already printed to the user above.
+    });
   }, 1000);
 }

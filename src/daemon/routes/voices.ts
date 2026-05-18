@@ -7,29 +7,42 @@
  *
  * See planning/voices.md for design rationale.
  */
-import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
-import { voices } from '../../lib/db/index.js';
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { voices } from "../../lib/db/index.js";
 import {
   successResponse,
-  errorResponse,
   listEnvelope,
   sendError,
   type ApiResponse,
   type ListEnvelope,
-} from '../api-response.js';
+} from "../api-response.js";
 
-const Lineage = z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot']);
-const Source = z.enum(['cli', 'api']);
+// Keep in sync with `Lineage` in src/daemon/agents/types.ts. The route-level
+// enum is the validation boundary for POST /voices + GET /voices?lineage=...;
+// missing values here cause 400s for legitimate openrouter/local/grok rows
+// even though the rest of the stack (cli-precheck, shim registry, voice tier
+// scheduler) already supports them.
+const Lineage = z.enum([
+  "anthropic",
+  "openai",
+  "google",
+  "opencode",
+  "moonshot",
+  "openrouter",
+  "local",
+  "grok",
+]);
+const Source = z.enum(["cli", "api"]);
 
 const ListQuerySchema = z.object({
   lineage: Lineage.optional(),
   source: Source.optional(),
   provider: z.string().optional(),
   enabled: z
-    .enum(['true', 'false'])
+    .enum(["true", "false"])
     .optional()
-    .transform((v) => (v === undefined ? undefined : v === 'true')),
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 });
 
 // Cost fields: $/Mtok must be a finite, non-negative number. `null` is a
@@ -44,7 +57,7 @@ const PostBodySchema = z.object({
   provider: z.string().min(1),
   model_id: z.string().min(1),
   label: z.string().min(1),
-  source: Source.default('api'),
+  source: Source.default("api"),
   lineage: Lineage,
   vendor_family: z.string().nullable().optional(),
   input_cost_per_mtok: Cost,
@@ -52,11 +65,20 @@ const PostBodySchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+// Task-complexity tier: 'high' voices run any task, 'medium' run medium+low,
+// 'low' run only low. Used by the orchestrate scheduler to route work by
+// model strength when bypass_quota is false.
+const Tier = z.enum(["high", "medium", "low"]);
+// Optional monthly USD spend cap; null clears, omit preserves current.
+const MonthlyBudget = z.number().finite().min(0).nullable().optional();
+
 const PutBodySchema = z.object({
   label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   input_cost_per_mtok: Cost,
   output_cost_per_mtok: Cost,
+  tier: Tier.optional(),
+  monthly_budget_usd: MonthlyBudget,
 });
 
 export function registerVoiceRoutes(fastify: FastifyInstance): void {
@@ -69,17 +91,17 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       enabled?: string;
     };
     Reply: ApiResponse<ListEnvelope<object>>;
-  }>('/voices', async (request, reply) => {
+  }>("/voices", async (request, reply) => {
     try {
       const parsed = ListQuerySchema.safeParse(request.query);
       if (!parsed.success) {
-        return sendError(reply, 'validation', parsed.error.message);
+        return sendError(reply, "validation", parsed.error.message);
       }
       const items = await voices.list(parsed.data);
       return successResponse(listEnvelope(items));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -87,16 +109,20 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.get<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/voices/:id', async (request, reply) => {
+  }>("/voices/:id", async (request, reply) => {
     try {
       const v = await voices.getById(request.params.id);
       if (!v) {
-        return sendError(reply, 'not_found', `Voice ${request.params.id} not found`);
+        return sendError(
+          reply,
+          "not_found",
+          `Voice ${request.params.id} not found`,
+        );
       }
       return successResponse(v);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -104,16 +130,16 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.post<{
     Body: unknown;
     Reply: ApiResponse<object>;
-  }>('/voices', async (request, reply) => {
+  }>("/voices", async (request, reply) => {
     try {
       const parsed = PostBodySchema.safeParse(request.body);
       if (!parsed.success) {
-        return sendError(reply, 'validation', parsed.error.message);
+        return sendError(reply, "validation", parsed.error.message);
       }
       const id = `${parsed.data.provider}:${parsed.data.model_id}`;
       const existing = await voices.getById(id);
       if (existing) {
-        return sendError(reply, 'conflict', `Voice ${id} already exists`);
+        return sendError(reply, "conflict", `Voice ${id} already exists`);
       }
       const row = await voices.upsert({
         id,
@@ -129,8 +155,8 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       });
       return successResponse(row);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -142,21 +168,25 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
     Params: { id: string };
     Body: unknown;
     Reply: ApiResponse<object>;
-  }>('/voices/:id', async (request, reply) => {
+  }>("/voices/:id", async (request, reply) => {
     try {
       const parsed = PutBodySchema.safeParse(request.body);
       if (!parsed.success) {
-        return sendError(reply, 'validation', parsed.error.message);
+        return sendError(reply, "validation", parsed.error.message);
       }
       const existing = await voices.getById(request.params.id);
       if (!existing) {
-        return sendError(reply, 'not_found', `Voice ${request.params.id} not found`);
+        return sendError(
+          reply,
+          "not_found",
+          `Voice ${request.params.id} not found`,
+        );
       }
       const row = await voices.update(request.params.id, parsed.data);
       return successResponse(row);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -166,13 +196,13 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.delete<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/voices/:id', async (request) => {
+  }>("/voices/:id", async (request, reply) => {
     try {
       await voices.delete(request.params.id);
       return successResponse({ id: request.params.id, deleted: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return sendError(reply, "db_error", message);
     }
   });
 }

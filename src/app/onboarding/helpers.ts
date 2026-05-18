@@ -43,6 +43,12 @@ export const CLIS: CliRow[] = [
     hint: "MoonshotAI — kimi-k2 plan",
   },
   {
+    id: "grok-cli",
+    provider: "grok",
+    label: "Grok Build",
+    hint: "xAI — grok-build model (SuperGrok Heavy plan required for dispatch)",
+  },
+  {
     id: "cursor",
     provider: "cursor",
     label: "Cursor",
@@ -94,7 +100,11 @@ export function manualBinaryName(cliId: string): string {
       return "gemini";
     case "opencode-cli":
       return "opencode";
-    default:
+    case "kimi-cli":
       return "kimi";
+    case "grok-cli":
+      return "grok";
+    default:
+      return cliId;
   }
 }

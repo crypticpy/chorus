@@ -11,13 +11,13 @@
  * exactly once, regardless of subscriber count.
  */
 
-import { chats, phaseEvents } from '../lib/db/index.js';
-import { chatLogger } from '../lib/logger.js';
-import type { TemplateSchema } from '../lib/template-schema.js';
-import { ErrorDetector } from './error-detector.js';
-import * as participantAborts from './participant-aborts.js';
-import { runChat } from './runner.js';
-import type { TmuxManager } from './tmux-types.js';
+import { chats, phaseEvents } from "../lib/db/index.js";
+import { chatLogger } from "../lib/logger.js";
+import type { TemplateSchema } from "../lib/template-schema.js";
+import { ErrorDetector } from "./error-detector.js";
+import * as participantAborts from "./participant-aborts.js";
+import { runChat } from "./runner.js";
+import type { TmuxManager } from "./tmux-types.js";
 
 export interface Subscriber {
   /** Returns true if buffer available, false if full. */
@@ -65,12 +65,14 @@ export function phaseEventToRunnerEvent(
   // least surfaces as completed; the failure summary written to
   // answer.md drives the actual error display.
   const baseType =
-    ev.state === 'drafting'
-      ? 'phase_start'
-      : ev.state === 'submitted' || ev.state === 'warning' || ev.state === 'errored'
-        ? 'phase_done'
-        : ev.state === 'blocked'
-          ? 'phase_failed'
+    ev.state === "drafting"
+      ? "phase_start"
+      : ev.state === "submitted" ||
+          ev.state === "warning" ||
+          ev.state === "errored"
+        ? "phase_done"
+        : ev.state === "blocked"
+          ? "phase_failed"
           : null;
   if (!baseType) {
     console.warn(
@@ -102,40 +104,53 @@ interface RunWithMultiplexArgs {
 }
 
 const VALID_PHASE_KINDS = [
-  'plan',
-  'spec',
-  'tests',
-  'implement',
-  'review',
-  'verify',
-  'divergence',
-  'review_only',
+  "plan",
+  "spec",
+  "tests",
+  "implement",
+  "review",
+  "verify",
+  "divergence",
+  "review_only",
 ] as const;
 type PhaseKind = (typeof VALID_PHASE_KINDS)[number];
 
 const VALID_CHAT_STATUSES = [
-  'drafting',
-  'reviewing',
-  'approved',
-  'merged',
-  'blocked',
-  'cancelled',
-  'failed',
-  'no_review',
+  "drafting",
+  "reviewing",
+  "approved",
+  "merged",
+  "blocked",
+  "cancelled",
+  "failed",
+  "no_review",
 ] as const;
 type ChatStatus = (typeof VALID_CHAT_STATUSES)[number];
 
-function parseAttachedFiles(raw: string | null | undefined): string[] | undefined {
-  if (!raw) return undefined;
+type ParsedAttachedFiles =
+  | { kind: "empty" }
+  | { kind: "ok"; files: string[] }
+  | { kind: "invalid"; detail: string };
+
+function parseAttachedFiles(
+  raw: string | null | undefined,
+): ParsedAttachedFiles {
+  if (!raw) return { kind: "empty" };
   try {
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.every((p) => typeof p === 'string')) {
-      return parsed;
+    if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) {
+      return { kind: "ok", files: parsed };
     }
-  } catch {
-    /* ignore */
+    return {
+      kind: "invalid",
+      detail: "attached_files JSON is not a string array",
+    };
+  } catch (err) {
+    return {
+      kind: "invalid",
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
-  return undefined;
 }
 
 export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
@@ -152,13 +167,38 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
   // chats row (status='reviewing') and start a duplicate run. Drain
   // this set before releasing the slot.
   const pendingWrites = new Set<Promise<unknown>>();
-  const trackWrite = <T,>(p: Promise<T>): Promise<T> => {
+  const trackWrite = <T>(p: Promise<T>): Promise<T> => {
     pendingWrites.add(p);
     p.finally(() => pendingWrites.delete(p));
     return p;
   };
 
-  const onEvent: Parameters<typeof runChat>[0]['onEvent'] = (event) => {
+  // Dedup terminal participant events keyed by
+  // `(phaseIdx, round, role, agent)`. Duplicates can come from a parser
+  // that fires `message_done` more than once (the opencode parser
+  // historically did this — see src/daemon/agents/parsers/opencode.ts:20)
+  // or from same-slot fallback paths where each attempt emits its own
+  // `participant_done`. Without this gate the cockpit and any per-event
+  // side-effecting MCP client double-counts the same finished slot.
+  // (chorus-issues.md #9)
+  const participantDoneSeen = new Set<string>();
+
+  const onEvent: Parameters<typeof runChat>[0]["onEvent"] = (event) => {
+    if (event.type === "participant_done") {
+      const p = event.payload as Record<string, unknown>;
+      const key = [
+        p.phaseIdx ?? p.phaseId ?? "",
+        p.round ?? "",
+        p.role ?? "",
+        p.agent ?? "",
+      ]
+        .map(String)
+        .join("|");
+      if (participantDoneSeen.has(key)) {
+        return;
+      }
+      participantDoneSeen.add(key);
+    }
     const line = `data: ${JSON.stringify(event)}\n\n`;
     const toRemove: Subscriber[] = [];
     for (const sub of Array.from(subscribers)) {
@@ -167,7 +207,30 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
           sub.queue.push(line);
           if (sub.queue.length > 1000) {
             // Queue cap exceeded; drop subscriber to prevent unbounded
-            // memory.
+            // memory. Pre-fix the drop was completely silent — neither
+            // the daemon log nor the client got any signal, so a stalled
+            // SSE viewer just stopped seeing events with no diagnostic
+            // trace. Emit one `error` frame so a client that's still
+            // attached can show a banner, and log so an operator
+            // tailing daemon.log sees it.
+            try {
+              sub.write(
+                `data: ${JSON.stringify({
+                  type: "error",
+                  error: {
+                    code: "sse_backpressure",
+                    message:
+                      "subscriber queue cap exceeded; dropping connection",
+                  },
+                })}\n\n`,
+              );
+            } catch {
+              /* already dead */
+            }
+            chatLogger(chatId).warn(
+              { queueLen: sub.queue.length },
+              "sse subscriber dropped: queue cap exceeded",
+            );
             toRemove.push(sub);
             sub.close();
           }
@@ -189,15 +252,17 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     }
 
     if (
-      event.type === 'phase_start' ||
-      event.type === 'phase_done' ||
-      event.type === 'phase_failed'
+      event.type === "phase_start" ||
+      event.type === "phase_done" ||
+      event.type === "phase_failed"
     ) {
       const payload = event.payload as Record<string, unknown>;
       const kind = payload.kind as string;
-      const phaseKind: PhaseKind = (VALID_PHASE_KINDS as readonly string[]).includes(kind)
+      const phaseKind: PhaseKind = (
+        VALID_PHASE_KINDS as readonly string[]
+      ).includes(kind)
         ? (kind as PhaseKind)
-        : 'plan';
+        : "plan";
       // Fire-and-forget — onEvent is typed `(e) => void` and is called
       // synchronously from the runner; awaiting here would block the
       // entire fan-out chain. SQLite serializes writes via WAL anyway.
@@ -209,28 +274,28 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
             chat_id: chatId,
             phase_idx: (payload.phaseIdx as number) ?? 0,
             phase_kind: phaseKind,
-            role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
+            role: (payload.role as "doer" | "reviewer") ?? "doer",
             agent_id: (payload.agent as string) ?? null,
             state:
-              event.type === 'phase_start'
-                ? 'drafting'
-                : event.type === 'phase_done'
-                  ? 'submitted'
-                  : 'blocked',
+              event.type === "phase_start"
+                ? "drafting"
+                : event.type === "phase_done"
+                  ? "submitted"
+                  : "blocked",
             output: (payload.output as string) ?? null,
             cost_usd: 0,
             tokens_in: 0,
             tokens_out: 0,
             started_at: event.ts,
             finished_at:
-              event.type === 'phase_done' || event.type === 'phase_failed'
+              event.type === "phase_done" || event.type === "phase_failed"
                 ? Date.now()
                 : null,
           })
           .catch((err: unknown) => {
             chatLogger(chatId).error(
               { err: err instanceof Error ? err.message : String(err) },
-              'phaseEvents.create failed',
+              "phaseEvents.create failed",
             );
           }),
       );
@@ -250,30 +315,45 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     // cli_warning landed as state='errored', which made a successful
     // per-slot model fallback look like a reviewer crash in the audit
     // trail.
-    if (event.type === 'cli_error' || event.type === 'cli_warning') {
+    if (event.type === "cli_error" || event.type === "cli_warning") {
       const payload = event.payload as Record<string, unknown>;
-      const kind = payload.phaseKind as string | undefined;
-      const phaseKind: PhaseKind =
-        kind && (VALID_PHASE_KINDS as readonly string[]).includes(kind)
-          ? (kind as PhaseKind)
-          : 'review';
-      const errorObj = (payload.error as Record<string, unknown> | undefined) ?? {};
+      const kindRaw = payload.phaseKind as string | undefined;
+      const hasPhaseScope =
+        typeof kindRaw === "string" &&
+        (VALID_PHASE_KINDS as readonly string[]).includes(kindRaw);
+      // Chat-scoped warnings (e.g. `attached_files_invalid` emitted before
+      // the runner picks a phase) arrive without `phaseKind`/`phaseIdx`/
+      // `role`. Pre-fix we coerced them into a synthetic `review`/`reviewer`
+      // phase event, which makes the audit trail attribute a chat-level
+      // problem to a fake reviewer slot. Skip persistence for those — the
+      // chatLogger path already captured the warning and live subscribers
+      // received it via the original `onEvent(...)`. This `if`-tree is
+      // structured so we still fall through to the `chat_done` branch when
+      // a later event arrives.
+      if (!hasPhaseScope) {
+        return;
+      }
+      const phaseKind = kindRaw as PhaseKind;
+      const errorObj =
+        (payload.error as Record<string, unknown> | undefined) ?? {};
       const message =
         (errorObj.message as string | undefined) ??
         (payload.message as string | undefined) ??
-        'unknown error';
-      const isWarning = event.type === 'cli_warning';
-      const persistedState: 'errored' | 'warning' = isWarning ? 'warning' : 'errored';
+        "unknown error";
+      const isWarning = event.type === "cli_warning";
+      const persistedState: "errored" | "warning" = isWarning
+        ? "warning"
+        : "errored";
       const tag =
         (errorObj.kind as string | undefined) ??
-        (isWarning ? 'cli_warning' : 'cli_error');
+        (isWarning ? "cli_warning" : "cli_error");
       void trackWrite(
         phaseEvents
           .create({
             chat_id: chatId,
             phase_idx: (payload.phaseIdx as number) ?? 0,
             phase_kind: phaseKind,
-            role: (payload.role as 'doer' | 'reviewer') ?? 'reviewer',
+            role: (payload.role as "doer" | "reviewer") ?? "reviewer",
             agent_id: (payload.agent as string) ?? null,
             state: persistedState,
             // Pack the failure / warning context into output so the
@@ -300,9 +380,9 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     // enum. Tracked so .finally drains before releasing the activeRuns
     // slot — otherwise a reattaching SSE could see no active run + stale
     // 'reviewing' status and start a dup run.
-    if (event.type === 'chat_done') {
+    if (event.type === "chat_done") {
       const payload = event.payload as Record<string, unknown>;
-      const status = (payload.status as string) ?? 'completed';
+      const status = (payload.status as string) ?? "completed";
       // verdict is the reviewer-level outcome (separate from system-level
       // status). Always persist when present so review-only chats with
       // verdict='request_changes' are distinguishable from standard chats
@@ -311,18 +391,23 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
       // anything longer is bogus.
       const rawVerdict = payload.verdict;
       const verdict =
-        typeof rawVerdict === 'string' && rawVerdict.length > 0 && rawVerdict.length <= 32
+        typeof rawVerdict === "string" &&
+        rawVerdict.length > 0 &&
+        rawVerdict.length <= 32
           ? rawVerdict
           : null;
       void trackWrite(
         chats
           .update(chatId, {
-            status: (status === 'completed' ? 'approved' : status) as ChatStatus,
+            status: (status === "completed"
+              ? "approved"
+              : status) as ChatStatus,
             ...(verdict !== null ? { verdict } : {}),
-            ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
+            ...(typeof payload.prUrl === "string" && payload.prUrl.length > 0
               ? { pr_url: payload.prUrl }
               : {}),
-            ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
+            ...(typeof payload.shipError === "string" &&
+            payload.shipError.length > 0
               ? { ship_error: payload.shipError }
               : {}),
             finished_at: Date.now(),
@@ -330,12 +415,36 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
           .catch((err: unknown) => {
             chatLogger(chatId).error(
               { err: err instanceof Error ? err.message : String(err) },
-              'chats.update on chat_done failed',
+              "chats.update on chat_done failed",
             );
           }),
       );
     }
   };
+
+  const parsedAttached = parseAttachedFiles(chat.attached_files);
+  if (parsedAttached.kind === "invalid") {
+    // The chat row stored an attached_files blob we can't parse. Pre-fix
+    // we silently dropped it and ran the chat with no files — the user
+    // saw their attachments evaporate with no signal in the cockpit or
+    // daemon log. Surface as both a logger warning AND a `cli_warning`
+    // SSE so the run page can render which chat lost its file list.
+    chatLogger(chatId).warn(
+      { detail: parsedAttached.detail },
+      "parseAttachedFiles: dropped malformed attached_files JSON",
+    );
+    onEvent({
+      chatId,
+      type: "cli_warning",
+      payload: {
+        kind: "attached_files_invalid",
+        message: `Stored attached_files JSON could not be parsed (${parsedAttached.detail}). Running with no attachments.`,
+      },
+      ts: Date.now(),
+    });
+  }
+  const attachedFiles =
+    parsedAttached.kind === "ok" ? parsedAttached.files : undefined;
 
   const promise = runChat({
     chatId,
@@ -343,7 +452,16 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     work: chat.work,
     artifact: chat.artifact ?? undefined,
     repoPath: chat.repo_path ?? undefined,
-    attachedFiles: parseAttachedFiles(chat.attached_files),
+    attachedFiles,
+    // Resume support: a chat that was blocked on an audit checklist gets
+    // re-fired by the resume endpoint with current_phase_idx pointing at
+    // the orchestrate phase. Default 0 so a fresh chat still walks every
+    // phase from the top.
+    startPhaseIdx: chat.current_phase_idx ?? 0,
+    // PR-review chats (and any other path that wants tier gating
+    // disabled) carry this on the row. Forwarded to the orchestrate
+    // scheduler.
+    bypassQuota: chat.bypass_quota === true,
     abortSignal: abortController.signal,
     tmuxMgr,
     errorDetector,

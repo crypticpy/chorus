@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS chats (
   -- NULL for chats created before this column existed, or for chats that
   -- never reached the runner — readers fall back to the live template by id.
   template_snapshot TEXT,
+  -- When 1, the orchestrate scheduler ignores voice.tier and uses every
+  -- enabled voice at full capacity. Set by `/chats/from-pr` so PR reviews
+  -- always run with the strongest available models. Default 0 = honour
+  -- tier↔task-complexity matching. CHECK constraint guards the scheduler
+  -- from seeing any value other than 0/1.
+  bypass_quota INTEGER NOT NULL DEFAULT 0 CHECK (bypass_quota IN (0, 1)),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   finished_at INTEGER
@@ -133,6 +139,18 @@ CREATE TABLE IF NOT EXISTS voices (
   -- intent is sticky. Pre-fix DBs surface as NULL → treated as 'user' so
   -- we never silently override prior toggles after upgrade.
   disabled_reason TEXT,
+  -- Task-complexity tier this voice should be matched against. The
+  -- orchestrator scheduler matches `item.complexity` ≤ `voice.tier` so a
+  -- 'low' voice can run only 'low' tasks, 'medium' can run 'medium' or
+  -- 'low', 'high' can run anything. Default 'medium' on backfill. CHECK
+  -- constraint guards against typos / future migrations that would
+  -- silently change scheduler behaviour with an unrecognised tier label.
+  tier TEXT NOT NULL DEFAULT 'medium' CHECK (tier IN ('low', 'medium', 'high')),
+  -- Optional monthly spend cap this voice declares (USD). Captured for
+  -- future budget enforcement; not enforced today. NULL = no cap. CHECK
+  -- bounds the cap to non-negative dollars so corrupt rows can't poison
+  -- the future budget gate with a negative cap.
+  monthly_budget_usd REAL CHECK (monthly_budget_usd IS NULL OR monthly_budget_usd >= 0),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -142,3 +160,7 @@ CREATE INDEX IF NOT EXISTS idx_phase_events_chat ON phase_events(chat_id, phase_
 CREATE INDEX IF NOT EXISTS idx_voices_lineage ON voices(lineage);
 CREATE INDEX IF NOT EXISTS idx_voices_provider ON voices(provider);
 CREATE INDEX IF NOT EXISTS idx_voices_source ON voices(source);
+-- Speeds up `WHERE enabled = 0` scans used by `chorus diagnose` voice
+-- health summary. Tiny table today (<200 rows) so the index is mostly
+-- forward-looking, but cheap.
+CREATE INDEX IF NOT EXISTS idx_voices_enabled ON voices(enabled);

@@ -1,0 +1,47 @@
+id: audit-architecture-review
+name: Audit — Architecture Review
+description: |
+  One reviewer audits the working tree for architectural drift —
+  layering violations, near-circular imports, cross-cutting concerns
+  duplicated per call site, public-API leakage. Produces a checklist;
+  you trim it; three workers fan out on per-task branches.
+author: chorus
+agreementThreshold: 0.66
+onThresholdMet: ask
+maxRounds: 1
+yoloDefault: false
+estimatedBaselineTokens: 600
+
+phases:
+  - id: audit
+    kind: audit
+    title: Architecture Review Audit
+    preset: architecture-review
+    description: Find layering violations, near-circular imports, duplicated cross-cutting concerns, public-API leakage.
+    reviewer:
+      lineage: anthropic
+      models:
+        - claude-opus-4-7
+    inputs:
+      include: []
+      exclude: []
+
+  - id: orchestrate
+    kind: orchestrate
+    title: Refactor Workers
+    description: Three workers each take a slice of the approved checklist and land refactors on isolated branches.
+    workers:
+      - lineage: anthropic
+        models:
+          - claude-opus-4-7
+      - lineage: openai
+        models:
+          - gpt-5.5
+      - lineage: google
+        models:
+          - gemini-3.1-pro-preview
+    branchPrefix: "chorus/{chatId}/worker-{idx}"
+    maxConcurrentWorkers: 3
+    inputs:
+      include: []
+      exclude: []

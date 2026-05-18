@@ -75,7 +75,50 @@ function fromRow(row: RawChatRow): Chat {
       const parsed = JSON.parse(row.template_snapshot);
       const result = TemplateSchema.safeParse(parsed);
       if (result.success) {
-        templateSnapshot = result.data as unknown as Template;
+        // Daemon-side TemplateSchema only carries `candidates` on each
+        // ReviewerRule — the cockpit's Template type expects
+        // `candidatesWithModels` populated (mirrors what
+        // `lib/api/templates.ts:getTemplate` produces from the daemon's
+        // /templates response). Without this derivation, `enrichRounds`
+        // iterates zero reviewer slots from the snapshot and no model
+        // name reaches the run-page cards. Regression since chorus-101
+        // (template snapshot, v0.8.26). Upstream PR #6.
+        const enriched = {
+          ...result.data,
+          phases: result.data.phases.map((p) => {
+            // Only standard / review_only reviewers carry a `candidates`
+            // array (the rule-shape the cockpit cards iterate). Audit-
+            // phase reviewers are single-voice (lineage/models/persona,
+            // no candidates) and don't need the enrichment — leave them
+            // alone so the type narrowing stays clean.
+            if (!("reviewer" in p) || !p.reviewer) return p;
+            const r = p.reviewer as {
+              candidates?: Array<{
+                lineage: string;
+                models?: string[];
+                persona?: string;
+              }>;
+              candidatesWithModels?: unknown[];
+            };
+            if (!r.candidates) return p;
+            return {
+              ...p,
+              reviewer: {
+                ...p.reviewer,
+                // If a future daemon ever serialises this field
+                // directly, prefer it; otherwise derive from candidates.
+                candidatesWithModels:
+                  r.candidatesWithModels ??
+                  r.candidates.map((c) => ({
+                    lineage: c.lineage,
+                    models: c.models ?? [],
+                    ...(c.persona !== undefined ? { persona: c.persona } : {}),
+                  })),
+              },
+            };
+          }),
+        };
+        templateSnapshot = enriched as unknown as Template;
       }
       // else: leave undefined — caller's fallback handles it
     } catch {
@@ -147,3 +190,40 @@ export async function createChat(options: {
   return fromRow(row);
 }
 
+export interface CreateChatFromPrResponse extends Chat {
+  pr?: {
+    owner: string;
+    repo: string;
+    number: number;
+    title: string;
+    author: string;
+    baseBranch: string;
+    headBranch: string;
+  };
+}
+
+/**
+ * Create a chat from a GitHub PR URL. Daemon shells out to `gh` to fetch
+ * the PR (meta + diff + existing comments), composes a Markdown artifact,
+ * and seeds a review-only chat.
+ *
+ * Caller MUST pass a templateId pointing at a `review_only` template — the
+ * daemon validates this and surfaces a `validation` error otherwise.
+ */
+type RawChatRowWithPr = RawChatRow & { pr?: CreateChatFromPrResponse["pr"] };
+
+export async function createChatFromPr(options: {
+  url: string;
+  templateId: string;
+  /** Optional cwd for the gh CLI shell-out. Defaults to daemon process cwd
+   *  if omitted; pass when the PR's repo is checked out locally and you
+   *  want the chat row to retain that path for follow-up flows. */
+  repoPath?: string;
+  yolo?: boolean;
+}): Promise<CreateChatFromPrResponse> {
+  const row = await fetchFromDaemon<RawChatRowWithPr>("/chats/from-pr", {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+  return { ...fromRow(row), pr: row.pr };
+}
