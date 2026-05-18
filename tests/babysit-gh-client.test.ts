@@ -295,7 +295,11 @@ describe("ghRequest — body handling", () => {
     expect((res as { body: unknown }).body).toBeNull();
   });
 
-  it("returns a typed error when the CLI path is asked to send a body", async () => {
+  it("pipes the JSON body to gh via --input - on the CLI path", async () => {
+    let captured: {
+      args: string[];
+      input: string | undefined;
+    } | null = null;
     const res = await ghRequest(
       {
         method: "POST",
@@ -305,14 +309,29 @@ describe("ghRequest — body handling", () => {
       },
       {
         loadConfig: async () => null,
-        runCli: async () => ({ ok: true, stdout: "", stderr: "", code: 0 }),
+        runCli: async (_cmd, args, opts) => {
+          captured = { args, input: opts.input };
+          return {
+            ok: true,
+            stdout: '{"id":42}',
+            stderr: "",
+            code: 0,
+          };
+        },
       },
     );
-    expect(res.ok).toBe(false);
+    expect(res.ok).toBe(true);
     expect(res.authMode).toBe("cli");
-    expect((res as { errorText: string }).errorText).toMatch(
-      /does not support request bodies/,
-    );
+    expect(captured).not.toBeNull();
+    expect(captured!.args).toEqual([
+      "api",
+      "--method",
+      "POST",
+      "repos/o/r/issues/1/comments",
+      "--input",
+      "-",
+    ]);
+    expect(captured!.input).toBe(JSON.stringify({ body: "hi" }));
   });
 });
 

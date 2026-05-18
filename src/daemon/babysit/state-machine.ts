@@ -248,12 +248,16 @@ async function handleJudging(
     };
   }
 
-  const fetched = await fetchPrComments({
-    owner,
-    repo,
-    prNumber: job.pr_number,
-    cwd: job.worktree_path,
-  });
+  const fetched = await fetchPrComments(
+    {
+      owner,
+      repo,
+      prNumber: job.pr_number,
+      cwd: job.worktree_path,
+      installationId: job.installation_id,
+    },
+    deps.ghDeps,
+  );
   if (!fetched.ok) {
     return {
       nextState: "escalated",
@@ -363,12 +367,16 @@ async function handleFixing(
 
   // Re-fetch the comment text — the decision table only has the
   // hash. We need the raw body for the doer prompt.
-  const comments = await fetchPrComments({
-    owner,
-    repo,
-    prNumber: job.pr_number,
-    cwd: job.worktree_path,
-  });
+  const comments = await fetchPrComments(
+    {
+      owner,
+      repo,
+      prNumber: job.pr_number,
+      cwd: job.worktree_path,
+      installationId: job.installation_id,
+    },
+    deps.ghDeps,
+  );
   if (!comments.ok) {
     return {
       nextState: "escalated",
@@ -583,12 +591,16 @@ async function handleQuietCheck(
   // bot comment whose hash isn't yet in babysit_decisions for this
   // job. Promote back to judging if so; otherwise stay in
   // quiet_check until either a merge or a new comment.
-  const fetched = await fetchPrComments({
-    owner,
-    repo,
-    prNumber: job.pr_number,
-    cwd: job.worktree_path,
-  });
+  const fetched = await fetchPrComments(
+    {
+      owner,
+      repo,
+      prNumber: job.pr_number,
+      cwd: job.worktree_path,
+      installationId: job.installation_id,
+    },
+    deps.ghDeps,
+  );
   if (!fetched.ok) {
     return {
       nextState: "escalated",

@@ -1,6 +1,6 @@
 /**
- * Pull review + issue comments from a PR via `gh` and normalize them into
- * the shape the judge consumes. Each comment is keyed by a stable content
+ * Pull review + issue comments from a PR and normalize them into the
+ * shape the judge consumes. Each comment is keyed by a stable content
  * hash (sha256 of body) so the per-comment circuit breaker can recognise
  * "we've already judged this exact body N times for this PR" across
  * separate fetch passes.
@@ -11,12 +11,14 @@
  * judge prompt can route per-bot heuristics without re-doing regex on
  * the login.
  *
- * gh failure modes reuse the classifier from github-pr.ts via a tiny
- * shared helper kept inline here — duplicating two enums is cheaper than
- * cross-importing private internals.
+ * Auth: we route through the shared `ghRequest` shim so App auth is
+ * used when an installation id is available (production daemons where
+ * `gh` is not installed for any human), with the gh CLI as the local-dev
+ * fallback. Failure modes are mapped back to the existing classifier so
+ * the state machine's escalation strings stay stable.
  */
 import * as crypto from "crypto";
-import { runAsync } from "../ship.js";
+import { ghRequest, type GhClientDeps } from "./gh-client.js";
 
 export type CommentKind = "review" | "issue";
 
@@ -111,29 +113,57 @@ export function hashCommentBody(body: string): string {
  * Fetch both review (line-anchored) and issue (conversation) comments for
  * a PR, normalize them, and return one merged list sorted oldest-first.
  *
- * cwd matters: gh resolves auth + default repo from the working dir. For
- * a babysit job we pass the worktree path; for a one-off MCP invocation
- * we pass process.cwd().
+ * cwd matters: when we fall back to the gh CLI it resolves auth + default
+ * repo from the working dir. For a babysit job we pass the worktree path;
+ * for a one-off MCP invocation we pass process.cwd().
+ *
+ * `installationId` opts the call onto App auth when a GitHub App is
+ * configured for the daemon — required on headless hosts where no human
+ * has `gh auth login`'d.
  */
-export async function fetchPrComments(args: {
-  owner: string;
-  repo: string;
-  prNumber: number;
-  cwd: string;
-  /** When set, only fetch comments newer than this ISO timestamp.
-   *  Used by the polling loop to avoid re-hashing the full comment list
-   *  every tick. GitHub's REST API supports `since=` directly. */
-  since?: string;
-}): Promise<FetchCommentsResult> {
-  const { owner, repo, prNumber, cwd, since } = args;
+export async function fetchPrComments(
+  args: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    cwd: string;
+    /** When set, only fetch comments newer than this ISO timestamp.
+     *  Used by the polling loop to avoid re-hashing the full comment list
+     *  every tick. GitHub's REST API supports `since=` directly. */
+    since?: string;
+    /** GitHub App installation id; opts into App auth when paired with a
+     *  configured App. Falls back to gh CLI when absent. */
+    installationId?: number | null;
+  },
+  deps: GhClientDeps = {},
+): Promise<FetchCommentsResult> {
+  const { owner, repo, prNumber, cwd, since, installationId } = args;
   const sinceQuery = since ? `&since=${encodeURIComponent(since)}` : "";
 
   const reviewPath = `repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100${sinceQuery}`;
   const issuePath = `repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100${sinceQuery}`;
 
   const [reviewRes, issueRes] = await Promise.all([
-    runAsync("gh", ["api", reviewPath], { cwd, timeoutMs: 20_000 }),
-    runAsync("gh", ["api", issuePath], { cwd, timeoutMs: 20_000 }),
+    ghRequest(
+      {
+        method: "GET",
+        path: reviewPath,
+        cwd,
+        timeoutMs: 20_000,
+        installationId: installationId ?? undefined,
+      },
+      deps,
+    ),
+    ghRequest(
+      {
+        method: "GET",
+        path: issuePath,
+        cwd,
+        timeoutMs: 20_000,
+        installationId: installationId ?? undefined,
+      },
+      deps,
+    ),
   ]);
 
   // If both calls failed with the same reason, surface it. If one fails
@@ -141,19 +171,19 @@ export async function fetchPrComments(args: {
   // is more useful than nothing.
   if (!reviewRes.ok && !issueRes.ok) {
     const reason =
-      classifyGhFailure(reviewRes.stderr) ?? classifyGhFailure(issueRes.stderr);
+      classifyGhFailureResult(reviewRes) ?? classifyGhFailureResult(issueRes);
     return {
       ok: false,
       reason: reason ?? "unknown",
-      detail: (reviewRes.stderr || issueRes.stderr || "").trim(),
+      detail: (reviewRes.errorText || issueRes.errorText || "").trim(),
     };
   }
 
   const reviewComments = reviewRes.ok
-    ? safeParseArray<GhReviewCommentJson>(reviewRes.stdout)
+    ? coerceArray<GhReviewCommentJson>(reviewRes.body)
     : [];
   const issueComments = issueRes.ok
-    ? safeParseArray<GhIssueCommentJson>(issueRes.stdout)
+    ? coerceArray<GhIssueCommentJson>(issueRes.body)
     : [];
 
   const out: RawPrComment[] = [];
@@ -191,18 +221,34 @@ function normalize(
   };
 }
 
-function safeParseArray<T>(stdout: string): T[] {
-  if (!stdout.trim()) return [];
-  try {
-    const parsed = JSON.parse(stdout);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
-    return [];
+function coerceArray<T>(body: unknown): T[] {
+  // ghRequest already JSON-parses the response body when the server
+  // returns JSON. Accept either a parsed array directly (App path,
+  // normal CLI 200) or a raw string for the rare cases where parsing
+  // fell through to the string fallback.
+  if (Array.isArray(body)) return body as T[];
+  if (typeof body === "string" && body.trim()) {
+    try {
+      const parsed = JSON.parse(body);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
   }
+  return [];
 }
 
-function classifyGhFailure(stderr: string): CommentFetchFailReason | null {
-  const s = (stderr ?? "").toLowerCase();
+function classifyGhFailureResult(res: {
+  status: number;
+  errorText: string;
+}): CommentFetchFailReason | null {
+  // Prefer HTTP status when ghRequest could pull one out — both the App
+  // path and the CLI fallback surface a parsed status. Fall through to
+  // stderr-string matching for the gh-not-installed / network classes
+  // where there's no HTTP exchange at all.
+  if (res.status === 404) return "pr_not_found";
+  if (res.status === 401 || res.status === 403) return "gh_not_authed";
+  const s = (res.errorText ?? "").toLowerCase();
   if (!s.trim()) return null;
   if (
     s.includes("command not found") ||

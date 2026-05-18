@@ -99,11 +99,13 @@ export type GhResponse = GhResponseOk | GhResponseErr;
 export interface GhClientDeps {
   loadConfig?: () => Promise<GhAppConfig | null>;
   fetcher?: GhAppFetcher;
-  /** Stub for the gh CLI shellout — same signature as ship.runAsync. */
+  /** Stub for the gh CLI shellout — same signature as ship.runAsync.
+   *  `input` is piped to the child's stdin when present (used for
+   *  POST/PATCH/PUT bodies via `gh api --input -`). */
   runCli?: (
     command: string,
     args: string[],
-    opts: { cwd: string; timeoutMs?: number },
+    opts: { cwd: string; timeoutMs?: number; input?: string },
   ) => Promise<{
     ok: boolean;
     stdout: string;
@@ -211,24 +213,21 @@ async function cliRequest(
     ? args.path.slice(1)
     : args.path;
   const cliArgs: string[] = ["api", "--method", args.method, cleanedPath];
+  // For POST/PATCH/PUT we pipe the JSON body to `gh api --input -`. gh
+  // reads stdin, parses it as JSON, and forwards it as the request
+  // body — which is what we want for write actions (reply posts, etc.)
+  // when no GitHub App is configured. Without this the reply path
+  // silently no-ops in CLI-only deployments and the babysit loop
+  // burns retries until the per-comment cap fires.
+  let input: string | undefined;
   if (args.body !== undefined) {
     cliArgs.push("--input", "-");
-  }
-  // `gh api` reads stdin when `--input -` is set, but our runAsync
-  // helper doesn't expose stdin yet. For now require callers wanting
-  // bodies to be on the App-auth path. Surface the limitation clearly.
-  if (args.body !== undefined) {
-    return {
-      ok: false,
-      authMode: "cli",
-      status: 0,
-      errorText:
-        "gh CLI fallback does not support request bodies; configure the GitHub App or supply installationId to use App auth",
-    };
+    input = JSON.stringify(args.body);
   }
   const res = await run("gh", cliArgs, {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs ?? 30_000,
+    input,
   });
   if (!res.ok) {
     return {
