@@ -252,6 +252,60 @@ async function initDb(): Promise<Client> {
     );
   }
 
+  // PR babysit jobs + decisions — added for the autonomous PR-review loop
+  // (docs/pr-babysit-design.md). Idempotent CREATE so DBs that pre-date
+  // this version pick them up without manual migration.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS babysit_jobs (
+      id TEXT PRIMARY KEY,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      installation_id INTEGER,
+      state TEXT NOT NULL,
+      worktree_path TEXT,
+      started_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      fix_commits INTEGER NOT NULL DEFAULT 0,
+      total_judge_calls INTEGER NOT NULL DEFAULT 0,
+      total_fix_calls INTEGER NOT NULL DEFAULT 0,
+      total_tokens_in INTEGER NOT NULL DEFAULT 0,
+      total_tokens_out INTEGER NOT NULL DEFAULT 0,
+      escalation_reason TEXT,
+      UNIQUE (repo, pr_number)
+    )
+  `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS babysit_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES babysit_jobs(id),
+      decided_at INTEGER NOT NULL,
+      comment_id INTEGER NOT NULL,
+      comment_author TEXT NOT NULL,
+      comment_hash TEXT NOT NULL,
+      bot TEXT,
+      validity TEXT NOT NULL,
+      category TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      judge_model TEXT NOT NULL,
+      shadow_judge_model TEXT,
+      shadow_validity TEXT,
+      shadow_disagreed INTEGER NOT NULL DEFAULT 0,
+      fix_model TEXT,
+      outcome TEXT,
+      outcome_commit TEXT
+    )
+  `);
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_babysit_jobs_state ON babysit_jobs(state)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_babysit_decisions_job ON babysit_decisions(job_id, decided_at)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_babysit_decisions_hash ON babysit_decisions(job_id, comment_hash)",
+  );
+
   return db;
 }
 

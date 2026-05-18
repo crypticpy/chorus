@@ -23,6 +23,7 @@ import {
 import type { ErrorDetector } from "./error-detector.js";
 import { runAuditPhase } from "./phases/audit.js";
 import { runOrchestratePhase } from "./phases/orchestrate.js";
+import { runVerifyPhase } from "./phases/verify.js";
 import { runDoer } from "./runner/doer-driver.js";
 import { readPriorRoundFeedback } from "./runner/prior-round.js";
 import { runReviewers } from "./runner/reviewer-driver.js";
@@ -376,6 +377,95 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             phaseId: phase.id,
             phaseIdx,
             kind: phase.kind,
+          },
+          ts: Date.now(),
+        });
+        continue;
+      }
+
+      // Verify phase: no LLM doer — runs the project's `chorus.verify`
+      // command in repoPath, fences the output into a synthetic doer
+      // answer, then routes through the standard reviewer flow. Pairs
+      // with the TDD loop (re-prompt implement on failure).
+      if (phase.kind === "verify") {
+        if (!repoPath) {
+          // Set the run-level failure latch BEFORE the phase_failed
+          // event + break: otherwise chat_done falls through to
+          // approved/completed even though the verify phase couldn't
+          // run at all. Same gating contract as the post-runVerifyPhase
+          // !passed branch below.
+          anyPhaseDoerFailed = true;
+          doerFailureReason = "max_rounds_exhausted";
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "verify",
+              reason: "missing_repo_path",
+              message:
+                "Verify phase requires a repoPath — chat was created without one.",
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
+        const verifyOutcome = await runVerifyPhase({
+          chatDir,
+          chatId,
+          phase,
+          phaseIdx,
+          work,
+          repoPath,
+          filesBlock,
+          tmuxMgr,
+          errorDetector,
+          onEvent,
+          abortSignal,
+          template,
+          templateFallbackReviewer: template.fallback?.reviewer,
+          templateFallbackDoer: template.fallback?.doer,
+        });
+        if (verifyOutcome.allReviewersFailed) {
+          anyPhaseAllReviewersFailed = true;
+        }
+        if (!verifyOutcome.completed) {
+          break;
+        }
+        // Verify is a hard gate. If the command failed (or the reviewer
+        // verdict was "request_changes") after the TDD loop exhausted
+        // its retries, treat the run as failed — otherwise downstream
+        // phases (e.g. ship) would happily proceed on top of a red
+        // test/typecheck and chat_done would emit `approved`.
+        if (!verifyOutcome.passed) {
+          anyPhaseDoerFailed = true;
+          doerFailureReason = "max_rounds_exhausted";
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "verify",
+              reason: "verify_not_passed",
+              message: verifyOutcome.summary,
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
+        onEvent({
+          chatId,
+          type: "phase_done",
+          payload: {
+            phaseId: phase.id,
+            phaseIdx,
+            kind: phase.kind,
+            passed: verifyOutcome.passed,
+            summary: verifyOutcome.summary,
           },
           ts: Date.now(),
         });

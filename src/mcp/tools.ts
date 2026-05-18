@@ -304,6 +304,32 @@ export const ReviewPrSchema = z.object({
     ),
 });
 
+/**
+ * Schema for `babysit_pr` — register a GitHub PR for the autonomous
+ * babysit loop. Phase A wires registration only (the state-machine runner
+ * ships in a follow-up); the call is idempotent so re-registering the
+ * same PR returns the existing job without resetting state mid-flight.
+ */
+export const BabysitPrSchema = z.object({
+  url: z
+    .string()
+    .url("url must be a valid GitHub PR URL")
+    .describe(
+      "Full GitHub PR URL (e.g. https://github.com/owner/repo/pull/123). " +
+        "The chorus daemon registers the PR for autonomous bot-comment " +
+        "judging + (later) fix attempts. You must have already run " +
+        "`gh auth login` so subsequent polls can read PR comments.",
+    ),
+  installationId: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      "Optional GitHub App installation id, for repos using the chorus " +
+        "GH App. Omit for gh-CLI-only mode (the default).",
+    ),
+});
+
 export const WaitForChatSchema = z.object({
   chatId: z.string().min(1, "chatId is required"),
   timeoutSec: z.number().int().positive().optional().default(600),
@@ -392,6 +418,16 @@ const ChatRefSchema = z.object({
   chatId: z.string(),
   status: z.string(),
   url: z.string(),
+});
+
+const BabysitJobRefSchema = z.object({
+  jobId: z.string(),
+  repo: z.string(),
+  prNumber: z.number().int(),
+  state: z.string(),
+  /** True when this call created a new job; false when an existing job
+   *  for the same PR was returned (idempotent re-register). */
+  created: z.boolean(),
 });
 
 const ReviewerArtifactSchema = z.object({
@@ -534,6 +570,45 @@ export async function reviewPr(input: unknown) {
   });
 
   return ChatRefSchema.parse(chatRowToRef(result));
+}
+
+/**
+ * Register a PR for the autonomous babysit loop. Idempotent — calling
+ * with the same URL twice returns the existing job rather than resetting
+ * it.
+ *
+ * Phase A returns the job ref; the state-machine runner that drives the
+ * job through judge / fix / verify ships in a follow-up. Until then the
+ * job sits in `idle` state, visible via /babysit/jobs.
+ */
+export async function babysitPr(input: unknown) {
+  const parsed = BabysitPrSchema.parse(input);
+  const result = await daemonFetch<{
+    job: {
+      id: string;
+      repo: string;
+      pr_number: number;
+      state: string;
+      started_at: number;
+    };
+    created: boolean;
+  }>("/babysit/jobs", {
+    method: "POST",
+    body: JSON.stringify({
+      url: parsed.url,
+      ...(parsed.installationId !== undefined
+        ? { installationId: parsed.installationId }
+        : {}),
+    }),
+  });
+
+  return BabysitJobRefSchema.parse({
+    jobId: result.job.id,
+    repo: result.job.repo,
+    prNumber: result.job.pr_number,
+    state: result.job.state,
+    created: result.created,
+  });
 }
 
 /**

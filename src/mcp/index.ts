@@ -2,7 +2,7 @@
 
 /**
  * Chorus MCP stdio server.
- * Exposes 10 tools to orchestrators (Claude Code, Codex, Cursor).
+ * Exposes 11 tools to orchestrators (Claude Code, Codex, Cursor).
  * Each tool calls the daemon REST API on http://127.0.0.1:7707.
  */
 
@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import fs from "node:fs";
 import path from "node:path";
 import {
+  babysitPr,
   createChat,
   waitForChat,
   getChatStatus,
@@ -21,6 +22,7 @@ import {
   listPersonas,
   invokePersona,
   reviewPr,
+  BabysitPrSchema,
   CreateChatSchema,
   WaitForChatSchema,
   GetChatStatusSchema,
@@ -54,7 +56,7 @@ const mcpServer = new McpServer({
 });
 
 /**
- * Register the 10 MCP tools.
+ * Register the 11 MCP tools.
  */
 
 mcpServer.registerTool(
@@ -269,6 +271,21 @@ mcpServer.registerTool(
   },
   async (input) => {
     const result = await reviewPr(input);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    };
+  },
+);
+
+mcpServer.registerTool(
+  "babysit_pr",
+  {
+    description:
+      "Register a GitHub PR for the chorus babysit loop — chorus polls the PR's bot review comments (CodeRabbit, Sourcery, Greptile, Codex), judges each one, and (in a follow-up release) applies fixes / posts replies / escalates back to you. Idempotent: re-calling with the same URL returns the existing job without resetting state. Returns { jobId, repo, prNumber, state, created }.",
+    inputSchema: BabysitPrSchema,
+  },
+  async (input) => {
+    const result = await babysitPr(input);
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };

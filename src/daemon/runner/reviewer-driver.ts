@@ -390,6 +390,7 @@ async function runReviewer(
         agent: `${agentName}-${reviewerIdx}`,
         totalSlots: phase.reviewer?.candidates?.length ?? 1,
       },
+      repoPath,
     );
     fs.writeFileSync(askFile, ask);
 

@@ -11,11 +11,25 @@
  * unwinding every `await` in this layer and its callers).
  */
 
-export { _resetDbForTests, getDb, resolveDbPath } from './connection.js';
-export { chats } from './chats.js';
-export { phaseEvents } from './phase-events.js';
-export { templates } from './templates.js';
-export { settings } from './settings.js';
-export { secrets } from './secrets.js';
-export { personas, type PersonaRow } from './personas.js';
-export { voices, type VoiceUpsertInput } from './voices.js';
+export { _resetDbForTests, getDb, resolveDbPath } from "./connection.js";
+export { chats } from "./chats.js";
+export { phaseEvents } from "./phase-events.js";
+export { templates } from "./templates.js";
+export { settings } from "./settings.js";
+export { secrets } from "./secrets.js";
+export { personas, type PersonaRow } from "./personas.js";
+export { voices, type VoiceUpsertInput } from "./voices.js";
+export {
+  babysitJobs,
+  type BabysitJob,
+  type BabysitState,
+  type CreateBabysitJobInput,
+} from "./babysit-jobs.js";
+export {
+  babysitDecisions,
+  type BabysitDecision,
+  type Category,
+  type Outcome,
+  type Validity,
+  type CreateBabysitDecisionInput,
+} from "./babysit-decisions.js";

@@ -186,6 +186,7 @@ export async function runDoer(
       filesBlock,
       doerPersonaPrompt,
       priorRoundFeedback,
+      repoPath,
     );
     fs.writeFileSync(askFile, ask);
 

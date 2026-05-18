@@ -470,13 +470,20 @@ function run(
 export function runAsync(
   command: string,
   args: string[],
-  opts: { cwd: string; timeoutMs?: number },
+  opts: { cwd: string; timeoutMs?: number; input?: string },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const timeoutMs = opts.timeoutMs ?? 15_000;
     let stdout = "";
     let stderr = "";
-    const child = spawn(command, args, { cwd: opts.cwd });
+    // Pipe stdin only when the caller has data to send — leaves the
+    // default ("inherit-like" no-op) behaviour for the legacy fan-out
+    // callers that never write to stdin.
+    const stdio: Array<"pipe" | "ignore"> =
+      opts.input !== undefined
+        ? ["pipe", "pipe", "pipe"]
+        : ["ignore", "pipe", "pipe"];
+    const child = spawn(command, args, { cwd: opts.cwd, stdio });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       resolve({
@@ -486,12 +493,24 @@ export function runAsync(
         code: null,
       });
     }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
+    if (opts.input !== undefined && child.stdin) {
+      // EPIPE is possible if the child exits before stdin is drained
+      // (e.g. it crashes on bad args). Swallow that here so the close
+      // handler can still surface the real exit code/stderr.
+      child.stdin.on("error", () => {});
+      child.stdin.write(opts.input);
+      child.stdin.end();
+    }
+    if (child.stdout) {
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf-8");
+      });
+    }
+    if (child.stderr) {
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf-8");
+      });
+    }
     child.on("error", (err) => {
       clearTimeout(timer);
       resolve({ ok: false, stdout, stderr: err.message, code: null });

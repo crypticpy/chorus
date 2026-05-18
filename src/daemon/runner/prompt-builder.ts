@@ -21,6 +21,19 @@ import type { Phase } from "../../lib/template-schema.js";
 const ATTACHED_FILE_MAX_BYTES = 64 * 1024;
 const ATTACHED_FILES_TOTAL_BYTES = 256 * 1024;
 
+// Per-guide cap. AGENTS.md / CLAUDE.md are often modest but some projects
+// (this one included) approach 10KB. 16KB each leaves plenty of budget for
+// the rest of the prompt; oversized guides truncate with a marker so the
+// model knows the cut happened.
+const PROJECT_GUIDE_MAX_BYTES = 16 * 1024;
+
+// Files we consider "project guidelines" — checked in priority order. AGENTS.md
+// is the cross-tool de-facto standard (Claude Code, Cursor, Continue, etc.
+// all read it); CLAUDE.md is Anthropic-specific. We include both when both
+// exist so a project that runs Claude Code AND other tools doesn't get its
+// Claude-only nuance dropped.
+const PROJECT_GUIDE_FILES: ReadonlyArray<string> = ["AGENTS.md", "CLAUDE.md"];
+
 /**
  * Inline the contents of user-attached files into a single markdown block
  * the doer/reviewer can read directly. Drops files that:
@@ -169,6 +182,102 @@ function personaPromptBlock(systemPrompt: string | undefined): string {
   ].join("\n");
 }
 
+/**
+ * Read AGENTS.md / CLAUDE.md from the user's repo and pack them into an
+ * HTML-tagged block we can prepend to ask.md. Returns empty string when
+ * neither file exists or repoPath is unset.
+ *
+ * Tag fence rationale matches `personaPromptBlock`: project guides are
+ * user-edited markdown and would otherwise let `# heading` / `---` HRs /
+ * code fences bleed into the surrounding ask.md structure. We strip any
+ * literal `</project_guidelines>` to keep the closer un-fakeable.
+ *
+ * Each file is truncated to PROJECT_GUIDE_MAX_BYTES with a visible marker
+ * so the model knows the cut happened.
+ */
+export function readProjectGuides(repoPath: string | undefined): string {
+  if (!repoPath) return "";
+  const root = path.resolve(repoPath);
+  if (!fs.existsSync(root)) return "";
+
+  const sections: string[] = [];
+
+  for (const filename of PROJECT_GUIDE_FILES) {
+    const abs = path.join(root, filename);
+    if (!fs.existsSync(abs)) continue;
+
+    let body = "";
+    let fd = -1;
+    try {
+      // Symlink + non-regular-file guards mirror packAttachedFiles. A
+      // project shipping a CLAUDE.md → ../../etc/passwd symlink shouldn't
+      // leak the target into the prompt.
+      //
+      // TOCTOU hardening: on POSIX, open with O_NOFOLLOW and fstat the
+      // returned descriptor so we can't be swapped between the check
+      // and the read. O_NOFOLLOW makes the open itself fail if the
+      // final path component is a symlink, eliminating the lstat/read
+      // race that an attacker could otherwise exploit by replacing the
+      // file after the lstat returns but before readFileSync runs.
+      // Windows doesn't expose O_NOFOLLOW; fall back to lstat/read with
+      // a comment so the gap is documented.
+      if (process.platform !== "win32") {
+        fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile()) continue;
+        body = fs.readFileSync(fd, "utf-8");
+      } else {
+        const stat = fs.lstatSync(abs);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        body = fs.readFileSync(abs, "utf-8");
+      }
+    } catch {
+      continue;
+    } finally {
+      if (fd >= 0) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* fd may already be closed by readFileSync on some node versions */
+        }
+      }
+    }
+
+    if (body.trim().length === 0) continue;
+
+    // Measure + truncate in UTF-8 bytes, not UTF-16 code units —
+    // `PROJECT_GUIDE_MAX_BYTES` is documented as a byte cap, and a
+    // string of multibyte chars (e.g. CJK in comments, emoji in
+    // CLAUDE.md) would otherwise sail past the intended limit.
+    // subarray() may slice a continuation byte; toString("utf-8")
+    // replaces the dangling sequence with U+FFFD, which is the
+    // standard recovery behavior and harmless for context blocks.
+    const bodyBytes = Buffer.from(body, "utf-8");
+    const truncated = bodyBytes.length > PROJECT_GUIDE_MAX_BYTES;
+    const slice = truncated
+      ? bodyBytes.subarray(0, PROJECT_GUIDE_MAX_BYTES).toString("utf-8")
+      : body;
+    const sanitized = slice.replace(/<\/project_guidelines>/gi, "");
+
+    sections.push(
+      `### ${filename}${truncated ? ` (truncated to ${PROJECT_GUIDE_MAX_BYTES} bytes)` : ""}`,
+    );
+    sections.push(sanitized.trimEnd());
+    sections.push("");
+  }
+
+  if (sections.length === 0) return "";
+  return [
+    "<project_guidelines>",
+    "These are the project's own instructions for AI agents. Treat them as",
+    "binding context — they override your defaults when they conflict.",
+    "",
+    ...sections,
+    "</project_guidelines>",
+    "",
+  ].join("\n");
+}
+
 /** Build the doer ask.md prompt for one phase iteration. */
 export function buildAsk(
   phase: Phase,
@@ -179,12 +288,17 @@ export function buildAsk(
   filesBlock: string,
   personaSystemPrompt?: string,
   priorRoundFeedback?: string,
+  repoPath?: string,
 ): string {
   const lines: string[] = [];
 
   const personaBlock = personaPromptBlock(personaSystemPrompt);
   if (personaBlock) {
     lines.push(personaBlock);
+  }
+  const guidesBlock = readProjectGuides(repoPath);
+  if (guidesBlock) {
+    lines.push(guidesBlock);
   }
   lines.push(`# Chorus task — round ${round}, phase ${phase.id}`);
   lines.push("");
@@ -252,12 +366,17 @@ export function buildReviewerAsk(
   filesBlock: string,
   personaSystemPrompt?: string,
   slot?: ReviewerSlotIdentity,
+  repoPath?: string,
 ): string {
   const lines: string[] = [];
 
   const personaBlock = personaPromptBlock(personaSystemPrompt);
   if (personaBlock) {
     lines.push(personaBlock);
+  }
+  const guidesBlock = readProjectGuides(repoPath);
+  if (guidesBlock) {
+    lines.push(guidesBlock);
   }
   lines.push(`# Chorus review — round ${round}, phase ${phase.id}`);
   lines.push("");
