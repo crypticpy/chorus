@@ -607,6 +607,21 @@ export async function runVerifyPhase(
     };
   }
 
+  // If the loop exited because the caller aborted us, do NOT spend
+  // additional reviewer cycles (each `runReviewers` call can be 30+
+  // seconds of LLM work). The abort signal is a strong "stop now"
+  // request; honor it before the reviewer pass.
+  if (abortSignal.aborted) {
+    return {
+      completed: false,
+      passed: false,
+      allReviewersFailed: false,
+      summary: `Aborted during verify after ${iter} iteration(s); skipping reviewer pass.`,
+      command: lastResult,
+      iterations: iter,
+    };
+  }
+
   // Final reviewer pass on the last iteration's artifact. Round number
   // matches the iteration's round so cockpit timeline grouping works.
   const finalRound = TDD_ROUND_OFFSET + iter;

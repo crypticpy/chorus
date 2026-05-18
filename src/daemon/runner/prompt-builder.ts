@@ -206,21 +206,41 @@ export function readProjectGuides(repoPath: string | undefined): string {
     const abs = path.join(root, filename);
     if (!fs.existsSync(abs)) continue;
 
-    let body: string;
+    let body = "";
+    let fd = -1;
     try {
       // Symlink + non-regular-file guards mirror packAttachedFiles. A
       // project shipping a CLAUDE.md → ../../etc/passwd symlink shouldn't
       // leak the target into the prompt.
-      let stat: fs.Stats;
-      try {
-        stat = fs.lstatSync(abs);
-      } catch {
-        continue;
+      //
+      // TOCTOU hardening: on POSIX, open with O_NOFOLLOW and fstat the
+      // returned descriptor so we can't be swapped between the check
+      // and the read. O_NOFOLLOW makes the open itself fail if the
+      // final path component is a symlink, eliminating the lstat/read
+      // race that an attacker could otherwise exploit by replacing the
+      // file after the lstat returns but before readFileSync runs.
+      // Windows doesn't expose O_NOFOLLOW; fall back to lstat/read with
+      // a comment so the gap is documented.
+      if (process.platform !== "win32") {
+        fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile()) continue;
+        body = fs.readFileSync(fd, "utf-8");
+      } else {
+        const stat = fs.lstatSync(abs);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        body = fs.readFileSync(abs, "utf-8");
       }
-      if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      body = fs.readFileSync(abs, "utf-8");
     } catch {
       continue;
+    } finally {
+      if (fd >= 0) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* fd may already be closed by readFileSync on some node versions */
+        }
+      }
     }
 
     if (body.trim().length === 0) continue;

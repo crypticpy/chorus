@@ -389,6 +389,13 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       // with the TDD loop (re-prompt implement on failure).
       if (phase.kind === "verify") {
         if (!repoPath) {
+          // Set the run-level failure latch BEFORE the phase_failed
+          // event + break: otherwise chat_done falls through to
+          // approved/completed even though the verify phase couldn't
+          // run at all. Same gating contract as the post-runVerifyPhase
+          // !passed branch below.
+          anyPhaseDoerFailed = true;
+          doerFailureReason = "max_rounds_exhausted";
           onEvent({
             chatId,
             type: "phase_failed",

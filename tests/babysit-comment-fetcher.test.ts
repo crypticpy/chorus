@@ -190,7 +190,10 @@ describe("fetchPrComments", () => {
     expect(human.path).toBeNull();
   });
 
-  it("returns partial data when one endpoint fails", async () => {
+  it("fails closed when one endpoint fails (no partial-data judging)", async () => {
+    // Autonomous judging on incomplete comments could silently merge a
+    // PR that has unaddressed line-level review feedback. The fetch
+    // surfaces the failure so the state machine retries next tick.
     writeFakeGh([
       {
         argMatch: "/pulls/",
@@ -216,10 +219,12 @@ describe("fetchPrComments", () => {
       prNumber: 1,
       cwd: tmpBin,
     });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.comments).toHaveLength(1);
-    expect(res.comments[0].kind).toBe("issue");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    // The 500 stderr doesn't classify cleanly into our taxonomy; what
+    // matters is that the failure surfaces rather than silently dropping
+    // the review-comment surface.
+    expect(["unknown", "network_failure"]).toContain(res.reason);
   });
 
   it("surfaces gh_not_authed when both endpoints fail with auth error", async () => {

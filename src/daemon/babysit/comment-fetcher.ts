@@ -172,28 +172,36 @@ export async function fetchPrComments(
     ),
   ]);
 
-  // If both calls failed with the same reason, surface it. If one fails
-  // and the other succeeds, prefer the success — partial comment data
-  // is more useful than nothing.
-  if (!reviewPaged.ok && !issuePaged.ok) {
+  // Fail closed — autonomous judging on partial input is unsafe. If the
+  // review endpoint failed but the issue endpoint succeeded, the judge
+  // would miss line-level bot comments entirely and potentially merge a
+  // PR with unaddressed P1 review feedback. The state machine retries
+  // failed fetches next tick, so transient errors recover; surfacing the
+  // failure here is the right safety boundary.
+  if (!reviewPaged.ok || !issuePaged.ok) {
+    // Pick the actually-failed page to extract status/errorText from.
+    // The discriminant union forces narrowing via a typed local — a
+    // ternary on .ok loses the narrowing because the result type is
+    // the union, not the failure-only branch.
+    const failed: { status: number; errorText: string } = !reviewPaged.ok
+      ? { status: reviewPaged.status, errorText: reviewPaged.errorText }
+      : !issuePaged.ok
+        ? { status: issuePaged.status, errorText: issuePaged.errorText }
+        : { status: 0, errorText: "" };
     const reason =
       classifyGhFailureResult({
-        status: reviewPaged.status,
-        errorText: reviewPaged.errorText,
-      }) ??
-      classifyGhFailureResult({
-        status: issuePaged.status,
-        errorText: issuePaged.errorText,
-      });
+        status: failed.status,
+        errorText: failed.errorText,
+      }) ?? "unknown";
     return {
       ok: false,
-      reason: reason ?? "unknown",
-      detail: (reviewPaged.errorText || issuePaged.errorText || "").trim(),
+      reason,
+      detail: failed.errorText.trim(),
     };
   }
 
-  const reviewComments = reviewPaged.ok ? reviewPaged.items : [];
-  const issueComments = issuePaged.ok ? issuePaged.items : [];
+  const reviewComments = reviewPaged.items;
+  const issueComments = issuePaged.items;
 
   const out: RawPrComment[] = [];
   for (const c of reviewComments) {

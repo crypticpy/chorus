@@ -76,6 +76,16 @@ export interface StateMachineDeps {
   /** Per-call timeouts (judges + doers are slow LLM calls). */
   judgeTimeoutMs?: number;
   doerTimeoutMs?: number;
+  /** Judge model config. Defaults to the haiku-tier model below if
+   *  unset — judging is short, cheap, and benefits from a cheaper
+   *  model than the doer. Override only when the caller has a specific
+   *  routing requirement. */
+  judgeLineage?: string;
+  judgeModel?: string;
+  /** Optional caller-controlled abort signal for shutdown / cancellation.
+   *  Forwarded to the judge LLM call so a daemon stop can interrupt
+   *  in-flight judging instead of waiting for the LLM timeout. */
+  abortSignal?: AbortSignal;
   /** Optional override for the in-flight tick logger. */
   log?: (line: string) => void;
 }
@@ -430,7 +440,13 @@ async function handleFixing(
   const fixed: ApplyFixResult = await applyFixForComment({
     worktreePath: job.worktree_path,
     comment: matched,
-    judgementRationale: target.validity, // we don't store the rationale; pass validity as a thin proxy
+    // We don't persist the judge's free-text rationale (schema only
+    // stores the structured classification: validity / category /
+    // confidence). Synthesize a short descriptor from what we DO have
+    // so the doer sees an honest summary instead of being misled by
+    // a single-word validity enum. The full comment body is also in
+    // `comment`, so the doer isn't context-starved.
+    judgementRationale: `Judge classified this comment as ${target.validity} (${target.category}, confidence ${target.confidence.toFixed(2)}).`,
     tier,
     ctx: {
       owner,
@@ -674,11 +690,18 @@ async function runJudgeForComment(
       baseBranch: meta.baseBranch,
       priorDecisions: priors,
     },
-    lineage: "anthropic",
-    model: "claude-haiku-4-5",
+    // Judge runs cheap-tier by default — short classification call,
+    // not architecture-altering — but the caller can override via deps
+    // (e.g., a daemon configured for an alt-provider judge).
+    lineage: deps.judgeLineage ?? "anthropic",
+    model: deps.judgeModel ?? "claude-haiku-4-5",
     cwd: job.worktree_path,
     timeoutMs: deps.judgeTimeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS,
-    abortSignal: new AbortController().signal,
+    // Forward the caller's abort signal so a daemon shutdown / job
+    // pause can actually interrupt judging mid-flight. The previous
+    // orphan AbortController had no abort() path, so the signal was
+    // dead and the LLM call could only be cancelled via timeout.
+    abortSignal: deps.abortSignal ?? new AbortController().signal,
   });
 }
 
