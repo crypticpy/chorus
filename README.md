@@ -11,8 +11,8 @@
 [![CI](https://github.com/chorus-codes/chorus/actions/workflows/ci.yml/badge.svg)](https://github.com/chorus-codes/chorus/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/chorus-codes?color=22c55e)](https://www.npmjs.com/package/chorus-codes)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
-[![Status](https://img.shields.io/badge/status-v0.7-brightgreen)]()
-[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)]()
+[![Status](https://img.shields.io/badge/status-v0.8-brightgreen)](./ROADMAP.md)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)](https://nodejs.org/)
 
 [Repo](https://github.com/crypticpy/chorus) · [Roadmap](./ROADMAP.md) · [Issues](https://github.com/crypticpy/chorus/issues)
 
