@@ -6,38 +6,39 @@
  * runChat multi-subscriber wrapper lives in `runner-multiplex.ts`.
  */
 
-import fastifyCors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
-import fs from 'fs';
-import path from 'path';
-import { chats, templates } from '../lib/db/index.js';
-import { logger } from '../lib/logger.js';
-import { ErrorDetector } from './error-detector.js';
-import { startReaper } from './reaper.js';
-import { activeRunsCount, activeRunsSnapshot } from './runner-multiplex.js';
-import { registerChatRoutes } from './routes/chats.js';
-import { registerChatEventsRoute } from './routes/chats-events.js';
-import { registerOpenRouterRoutes } from './routes/openrouter.js';
+import fastifyCors from "@fastify/cors";
+import Fastify, { type FastifyInstance } from "fastify";
+import fs from "fs";
+import path from "path";
+import { chats, templates } from "../lib/db/index.js";
+import { logger } from "../lib/logger.js";
+import { ErrorDetector } from "./error-detector.js";
+import { startReaper } from "./reaper.js";
+import { activeRunsCount, activeRunsSnapshot } from "./runner-multiplex.js";
+import { registerBabysitRoutes } from "./routes/babysit.js";
+import { registerChatRoutes } from "./routes/chats.js";
+import { registerChatEventsRoute } from "./routes/chats-events.js";
+import { registerOpenRouterRoutes } from "./routes/openrouter.js";
 import {
   registerPersonaRoutes,
   registerTemplateRoutes,
-} from './routes/templates-personas.js';
+} from "./routes/templates-personas.js";
 import {
   registerSecretRoutes,
   registerSettingsRoutes,
-} from './routes/settings.js';
-import { registerStatsRoutes } from './routes/stats.js';
-import { registerSystemRoutes } from './routes/system.js';
-import { registerVoiceRoutes } from './routes/voices.js';
-import { TmuxManagerImpl } from './tmux.js';
+} from "./routes/settings.js";
+import { registerStatsRoutes } from "./routes/stats.js";
+import { registerSystemRoutes } from "./routes/system.js";
+import { registerVoiceRoutes } from "./routes/voices.js";
+import { TmuxManagerImpl } from "./tmux.js";
 import {
   errorResponse,
   successResponse,
   type ApiResponse,
-} from './api-response.js';
+} from "./api-response.js";
 
-export { getParsedTemplate } from './template-cache.js';
-export { isValidChatId } from './routes/chats.js';
+export { getParsedTemplate } from "./template-cache.js";
+export { isValidChatId } from "./routes/chats.js";
 
 /**
  * Resolve daemon port from env, with hard validation. parseInt('chorus', 10)
@@ -58,18 +59,18 @@ function resolveDaemonPort(): number {
 }
 
 const PORT = resolveDaemonPort();
-const HOST = '127.0.0.1';
+const HOST = "127.0.0.1";
 // Read version from the shipped package.json so it can never drift from
 // `package.json#version`. __dirname is dist/daemon (built) or src/daemon
 // (tsx dev); ../../package.json lands at the package root in both layouts.
 const VERSION: string = (() => {
   try {
-    const pkgPath = path.resolve(__dirname, '..', '..', 'package.json');
-    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    const pkgPath = path.resolve(__dirname, "..", "..", "package.json");
+    const raw = fs.readFileSync(pkgPath, "utf-8");
     const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? '0.0.0';
+    return parsed.version ?? "0.0.0";
   } catch {
-    return '0.0.0';
+    return "0.0.0";
   }
 })();
 const startTime = Date.now();
@@ -78,7 +79,13 @@ const startTime = Date.now();
 // when the cockpit triggers a one-click wire-up. Both src/daemon/index.ts
 // (tsx) and dist/daemon/index.js (PM2/built) resolve to <pkg-root>/bin/
 // chorus.mjs.
-const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs');
+const CHORUS_BIN_PATH = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "bin",
+  "chorus.mjs",
+);
 
 // Singletons shared across the daemon lifetime.
 let tmuxMgr: TmuxManagerImpl;
@@ -93,7 +100,7 @@ async function main(): Promise<void> {
     await chats.list({ limit: 1 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-     
+
     console.error(
       `\n[chorus] Could not open database. Run \`chorus init\` first, ` +
         `or check permissions on ~/.chorus/chorus.db.\n  detail: ${msg}\n`,
@@ -121,14 +128,17 @@ async function main(): Promise<void> {
   // builtin rows refresh from the file source of truth on every
   // startup; user-created rows (builtin=0) are not touched.
   try {
-    const { seedBuiltinPersonas } = await import('../lib/personas.js');
+    const { seedBuiltinPersonas } = await import("../lib/personas.js");
     const count = await seedBuiltinPersonas();
-     
+
     console.log(`[daemon] seeded ${count} built-in personas`);
   } catch (err) {
     // Non-fatal: daemon still works without personas.
-     
-    console.warn('[daemon] persona seed failed:', err instanceof Error ? err.message : err);
+
+    console.warn(
+      "[daemon] persona seed failed:",
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // Prime the merged spawn PATH BEFORE voice seed. seedCliVoices runs
@@ -137,20 +147,21 @@ async function main(): Promise<void> {
   // CLI shows up as undetected on the first boot after the user pasted
   // its path into onboarding.
   try {
-    const { buildRuntimePath } = await import('../lib/runtime-path.js');
-    const { cliPaths } = await import('../lib/cli-paths.js');
-    const { setSpawnPath } = await import('./headless.js');
+    const { buildRuntimePath } = await import("../lib/runtime-path.js");
+    const { cliPaths } = await import("../lib/cli-paths.js");
+    const { setSpawnPath } = await import("./headless.js");
     await cliPaths.refreshCache();
     const merged = await buildRuntimePath({
       additionalDirs: cliPaths.cachedDirs(),
     });
     setSpawnPath(merged);
-     
-    console.log(`[daemon] runtime PATH primed (${merged.split(':').length} dirs)`);
+
+    console.log(
+      `[daemon] runtime PATH primed (${merged.split(":").length} dirs)`,
+    );
   } catch (err) {
-     
     console.warn(
-      '[daemon] runtime PATH prime failed (falling back to process.env.PATH):',
+      "[daemon] runtime PATH prime failed (falling back to process.env.PATH):",
       err instanceof Error ? err.message : err,
     );
   }
@@ -160,16 +171,15 @@ async function main(): Promise<void> {
   // shell-outs); blocks listen on intent (we want voices ready before
   // routes serve).
   try {
-    const { seedCliVoices } = await import('../lib/voices.js');
+    const { seedCliVoices } = await import("../lib/voices.js");
     const result = await seedCliVoices();
-     
+
     console.log(
       `[daemon] voices Phase 1: +${result.added} added, ${result.updated} updated, ${result.disabled} auto-disabled`,
     );
   } catch (err) {
-     
     console.warn(
-      '[daemon] voices Phase 1 seed failed:',
+      "[daemon] voices Phase 1 seed failed:",
       err instanceof Error ? err.message : err,
     );
   }
@@ -191,7 +201,7 @@ async function main(): Promise<void> {
   const registerAll = (api: FastifyInstance): void => {
     api.get<{
       Reply: ApiResponse<{ version: string; uptime: number }>;
-    }>('/health', async () => {
+    }>("/health", async () => {
       // The redundant inner `ok: true` from earlier shipped versions
       // was dropped here — the envelope's outer `ok: true` is the
       // canonical liveness signal. Consumers that want a flat
@@ -209,13 +219,19 @@ async function main(): Promise<void> {
     registerPersonaRoutes(api);
     registerSettingsRoutes(api);
     registerSecretRoutes(api);
-    registerSystemRoutes(api, { chorusBinPath: CHORUS_BIN_PATH, version: VERSION });
+    registerSystemRoutes(api, {
+      chorusBinPath: CHORUS_BIN_PATH,
+      version: VERSION,
+    });
     registerVoiceRoutes(api);
     registerOpenRouterRoutes(api);
     registerStatsRoutes(api);
+    registerBabysitRoutes(api);
   };
 
-  await fastify.register(async (api) => registerAll(api), { prefix: '/api/v1' });
+  await fastify.register(async (api) => registerAll(api), {
+    prefix: "/api/v1",
+  });
   // v0.7 transitional aliases — drop in v0.8.
   await fastify.register(async (api) => registerAll(api));
 
@@ -225,7 +241,7 @@ async function main(): Promise<void> {
   // Without this, a hung CLI from a previous run keeps burning
   // subscription quota until manually killed.
   try {
-    const { reapOrphanProcesses } = await import('./headless.js');
+    const { reapOrphanProcesses } = await import("./headless.js");
     const result = reapOrphanProcesses();
     if (result.reaped > 0 || result.cleared > 0) {
       console.log(
@@ -234,7 +250,7 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     // Non-fatal — orphan cleanup is best-effort.
-    console.warn('[chorus] reaper: failed to scan PID dir', err);
+    console.warn("[chorus] reaper: failed to scan PID dir", err);
   }
 
   stopReaper = startReaper(
@@ -244,7 +260,7 @@ async function main(): Promise<void> {
       // and reviewing). Terminal states are reaped.
       const allChats = await chats.list({ limit: 1000, offset: 0 });
       const activeMap = new Map<string, string>();
-      const activeStatuses = new Set(['drafting', 'reviewing']);
+      const activeStatuses = new Set(["drafting", "reviewing"]);
       for (const chat of allChats) {
         if (activeStatuses.has(chat.status)) {
           activeMap.set(chat.id, chat.status);
@@ -269,23 +285,28 @@ async function main(): Promise<void> {
         await Promise.race([
           Promise.allSettled(runs.map((e) => e.promise)),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout waiting for active runs')), 10000),
+            setTimeout(
+              () => reject(new Error("Timeout waiting for active runs")),
+              10000,
+            ),
           ),
         ]);
         console.log(`[chorus] aborted ${runs.length} active runs (${signal})`);
       } catch {
-        console.warn('[chorus] timeout or error waiting for active runs to abort');
+        console.warn(
+          "[chorus] timeout or error waiting for active runs to abort",
+        );
       }
     }
     if (stopReaper) stopReaper();
     await fastify.close();
     process.exit(0);
   };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 
   await fastify.listen({ port: PORT, host: HOST });
-  logger.info({ port: PORT, host: HOST, version: VERSION }, 'daemon listening');
+  logger.info({ port: PORT, host: HOST, version: VERSION }, "daemon listening");
   // Keep the human-readable startup line — the install script +
   // onboarding grep for it. Structured line above is what `chorus logs`
   // consumes.
@@ -294,20 +315,20 @@ async function main(): Promise<void> {
   // Anonymous opt-out telemetry. First send is delayed 5s so the
   // listener is definitely up; subsequent sends every 24h. All three
   // opt-out paths (env, touch-file, settings) are honoured per send.
-  const { startTelemetryHeartbeat } = await import('../lib/telemetry.js');
+  const { startTelemetryHeartbeat } = await import("../lib/telemetry.js");
   const telemetryHandle = startTelemetryHeartbeat({
     version: VERSION,
     daemonStartedAt: startTime,
   });
-  process.on('SIGTERM', () => telemetryHandle.stop());
-  process.on('SIGINT', () => telemetryHandle.stop());
+  process.on("SIGTERM", () => telemetryHandle.stop());
+  process.on("SIGINT", () => telemetryHandle.stop());
 
   // Voices Phase 2 — background warmup. `opencode models` shells out
   // and can take up to 10s; running it post-listen avoids that boot-
   // latency hit. Errors are logged but don't crash the daemon.
   void (async () => {
     try {
-      const { seedOpencodeVoicesAsync } = await import('../lib/voices.js');
+      const { seedOpencodeVoicesAsync } = await import("../lib/voices.js");
       const result = await seedOpencodeVoicesAsync();
       if (result) {
         console.log(
@@ -321,22 +342,24 @@ async function main(): Promise<void> {
         if (result.added > 0 || result.updated > 0) {
           try {
             await seedBuiltinTemplates();
-            console.log('[daemon] templates re-adapted after Phase 2 voice seed');
+            console.log(
+              "[daemon] templates re-adapted after Phase 2 voice seed",
+            );
           } catch (err) {
             console.warn(
-              '[daemon] template re-adapt after Phase 2 failed:',
+              "[daemon] template re-adapt after Phase 2 failed:",
               err instanceof Error ? err.message : err,
             );
           }
         }
       } else {
         console.log(
-          '[daemon] voices Phase 2 (opencode): skipped (CLI not detected or shell-out failed)',
+          "[daemon] voices Phase 2 (opencode): skipped (CLI not detected or shell-out failed)",
         );
       }
     } catch (err) {
       console.warn(
-        '[daemon] voices Phase 2 failed:',
+        "[daemon] voices Phase 2 failed:",
         err instanceof Error ? err.message : err,
       );
     }
@@ -344,29 +367,29 @@ async function main(): Promise<void> {
 }
 
 async function seedBuiltinTemplates(): Promise<void> {
-  const templatesDir = path.join(__dirname, '..', '..', 'templates');
+  const templatesDir = path.join(__dirname, "..", "..", "templates");
 
   if (!fs.existsSync(templatesDir)) {
-    console.log('No templates directory found, skipping seed');
+    console.log("No templates directory found, skipping seed");
     return;
   }
 
-  const files = fs.readdirSync(templatesDir).filter((f) => f.endsWith('.yaml'));
+  const files = fs.readdirSync(templatesDir).filter((f) => f.endsWith(".yaml"));
   const onDiskIds = new Set<string>();
 
   // Load the user's enabled voices once. The adapter rewrites slot
   // model lists to the voices the user actually has — substitutes
   // missing lineages with diversity-preserving alternatives, leaves
   // truly-empty slots blank and flags the template incomplete.
-  const { voices: voicesDb } = await import('../lib/db/index.js');
+  const { voices: voicesDb } = await import("../lib/db/index.js");
   const userVoices = await voicesDb.list();
-  const { adaptTemplate } = await import('./template-adapter.js');
+  const { adaptTemplate } = await import("./template-adapter.js");
 
   for (const file of files) {
-    const id = file.replace('.yaml', '');
+    const id = file.replace(".yaml", "");
     onDiskIds.add(id);
     const yamlPath = path.join(templatesDir, file);
-    const yamlContent = fs.readFileSync(yamlPath, 'utf-8');
+    const yamlContent = fs.readFileSync(yamlPath, "utf-8");
 
     // Adapt to user's voice fleet. Pure function — same input/voices
     // → same output, so re-running on every boot is idempotent unless
@@ -376,9 +399,9 @@ async function seedBuiltinTemplates(): Promise<void> {
     const existing = await templates.getById(id);
 
     if (!existing) {
-      await templates.create(id, adapted.yaml, 'builtin', adapted.isComplete);
+      await templates.create(id, adapted.yaml, "builtin", adapted.isComplete);
       console.log(
-        `[daemon] seeded template: ${id}${adapted.isComplete ? '' : ' (incomplete — needs setup)'}`,
+        `[daemon] seeded template: ${id}${adapted.isComplete ? "" : " (incomplete — needs setup)"}`,
       );
       continue;
     }
@@ -390,10 +413,10 @@ async function seedBuiltinTemplates(): Promise<void> {
     // User-cloned rows (source='user') are NEVER overwritten.
     const yamlChanged = existing.yaml !== adapted.yaml;
     const completenessChanged = existing.is_complete !== adapted.isComplete;
-    if (existing.source === 'builtin' && (yamlChanged || completenessChanged)) {
-      await templates.create(id, adapted.yaml, 'builtin', adapted.isComplete);
+    if (existing.source === "builtin" && (yamlChanged || completenessChanged)) {
+      await templates.create(id, adapted.yaml, "builtin", adapted.isComplete);
       console.log(
-        `[daemon] refreshed builtin template: ${id}${adapted.isComplete ? '' : ' (incomplete)'}`,
+        `[daemon] refreshed builtin template: ${id}${adapted.isComplete ? "" : " (incomplete)"}`,
       );
     }
   }
@@ -407,17 +430,21 @@ async function seedBuiltinTemplates(): Promise<void> {
     const allTemplates = await templates.list();
     let staleCount = 0;
     for (const tmpl of allTemplates) {
-      if (tmpl.source === 'builtin' && !onDiskIds.has(tmpl.id)) {
-        console.log(`[daemon] would delete stale builtin template (no delete method): ${tmpl.id}`);
+      if (tmpl.source === "builtin" && !onDiskIds.has(tmpl.id)) {
+        console.log(
+          `[daemon] would delete stale builtin template (no delete method): ${tmpl.id}`,
+        );
         staleCount++;
       }
     }
     if (staleCount > 0) {
-      console.log(`[daemon] flagged ${staleCount} stale builtin templates for cleanup`);
+      console.log(
+        `[daemon] flagged ${staleCount} stale builtin templates for cleanup`,
+      );
     }
   } catch (err) {
     // Non-fatal: if templates.list() fails, skip cleanup.
-    console.warn('[daemon] failed to scan stale builtin templates:', err);
+    console.warn("[daemon] failed to scan stale builtin templates:", err);
   }
 }
 
@@ -426,11 +453,11 @@ async function seedBuiltinTemplates(): Promise<void> {
 // tests/template-cache.test.ts importing the exported getParsedTemplate),
 // we don't want a side-effecty fastify boot or DB probe firing on module
 // load.
-const isEntryPoint = typeof require !== 'undefined' && require.main === module;
+const isEntryPoint = typeof require !== "undefined" && require.main === module;
 
 if (isEntryPoint) {
   main().catch((error) => {
-    console.error('Failed to start daemon:', error);
+    console.error("Failed to start daemon:", error);
     process.exit(1);
   });
 }
@@ -441,7 +468,9 @@ if (isEntryPoint) {
  */
 export function getTmuxManager(): TmuxManagerImpl {
   if (!tmuxMgr) {
-    throw new Error('TmuxManager not initialized. Daemon may not have started yet.');
+    throw new Error(
+      "TmuxManager not initialized. Daemon may not have started yet.",
+    );
   }
   return tmuxMgr;
 }

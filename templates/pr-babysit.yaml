@@ -1,0 +1,72 @@
+id: pr-babysit
+name: PR Babysit
+description: |
+  Autonomous PR-comment loop. Chorus polls a PR's bot review comments
+  (CodeRabbit, Sourcery, Greptile, Codex), judges each one
+  (valid/invalid/partially_valid/unsure with category + confidence),
+  then in a follow-up release applies trivial/targeted/architectural
+  fixes, posts replies, or escalates to the human.
+
+  Phase A (this release): the judge runs and persists decisions to
+  babysit_decisions; the fix/verify/push state machine ships next.
+  Treat the `judge` phase below as the *roster of models* chorus will
+  fan judgement out to — not a chat-runner pipeline.
+author: chorus
+agreementThreshold: 0.66
+onThresholdMet: ask
+maxRounds: 1
+yoloDefault: false
+# Judge-only floor: one structured-output call per unjudged comment.
+estimatedBaselineTokens: 800
+
+# Babysit pushes its own commits via the per-PR worktree path, not the
+# generic ship flow. Disable explicit ship to keep intent obvious.
+ship:
+  enabled: false
+
+phases:
+  # Judge phase — exposed as review_only so the existing template-adapter
+  # + UI can load it. The babysit runner (next release) reads
+  # `phase.reviewer.candidates` to pick judge models per comment; it does
+  # NOT drive this phase through runner.ts.
+  - id: judge
+    kind: review_only
+    title: Comment judgement
+    description: |
+      Classify each PR-bot comment: valid/invalid/partially_valid/unsure
+      with category (apply-trivial | apply-targeted | apply-architectural |
+      reply-disagree | reply-ack | defer-to-human) and confidence [0,1].
+      Confidence below 0.7 escalates to the human regardless of category.
+    reviewer:
+      require: 1
+      crossLineage: false
+      candidates:
+        # Default judge: fast, cheap, accurate-enough for the trivial/
+        # targeted classification calls. Architectural judgements
+        # automatically promote to the second candidate (the babysit
+        # runner does the promotion in code; here we just declare the
+        # roster).
+        - lineage: anthropic
+          models:
+            - claude-haiku-4-5
+        - lineage: anthropic
+          models:
+            - claude-sonnet-4-6
+    artifact:
+      label: "PR comment + diff context"
+      hint: |
+        Set internally by the babysit runner — one rendered comment block
+        per judgement call. Not user-facing.
+      maxBytes: 65536
+    inputs:
+      include: []
+      exclude: []
+
+# Reviewer fallback — if the primary judge model exhausts (quota,
+# auth, rate limit) chorus raises a Sonnet replacement so the babysit
+# job doesn't stall waiting on a single voice.
+fallback:
+  reviewer:
+    - lineage: anthropic
+      models:
+        - claude-sonnet-4-6
