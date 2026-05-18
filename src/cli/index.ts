@@ -70,7 +70,7 @@ registerBabysitCommand(program);
 
 program
   .command("ui")
-  .description("Open the Chorus web UI in default browser")
+  .description("Open the Polyphony web UI in default browser")
   .action(async () => {
     try {
       const env = detectRuntimeEnv();
@@ -95,7 +95,7 @@ program
 program
   .command("connect [orchestrator]")
   .description(
-    "Pre-approve all Chorus MCP tools in your orchestrator (default: claude)",
+    "Pre-approve all Polyphony MCP tools in your orchestrator (default: claude)",
   )
   .action(async (orchestrator?: string) => {
     const { runConnect } = await import("./connect.js");

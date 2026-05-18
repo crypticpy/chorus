@@ -306,7 +306,7 @@ export default function OnboardingPage() {
         </div>
 
         <p className="mb-8 text-sm leading-relaxed text-muted-foreground">
-          Chorus runs your prompt past 2–4 LLMs of different lineages and
+          Polyphony runs your prompt past 2–4 LLMs of different lineages and
           synthesises consensus. Pick the CLI subscriptions you already have, or
           paste API keys. You can change these later in Settings.
         </p>

@@ -175,7 +175,7 @@ async function daemonFetchWithRetry<T>(
         return daemonFetchWithRetry<T>(path, options, false);
       }
       throw new Error(
-        "Polyphony daemon not running and auto-start failed. Run 'chorus start' first " +
+        "Polyphony daemon not running and auto-start failed. Run 'polyphony start' (or 'chorus start') first " +
           "(set CHORUS_AUTOSTART=0 to disable auto-start prompts).",
       );
     }

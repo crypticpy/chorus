@@ -51,14 +51,14 @@ export function registerStopCommand(program: Command): void {
         ) {
           console.log("");
           console.log(
-            header(sym.info, "Chorus is not running", "nothing to stop"),
+            header(sym.info, "Polyphony is not running", "nothing to stop"),
           );
           console.log("");
           return;
         }
 
         console.log("");
-        console.log(header(sym.pointer, "Stopping Chorus..."));
+        console.log(header(sym.pointer, "Stopping Polyphony..."));
         console.log("");
 
         // Prefer daemon.json (v0.8), fall back to pidfiles (v0.7).
@@ -80,7 +80,10 @@ export function registerStopCommand(program: Command): void {
 
         console.log("");
       } catch (error) {
-        console.error(`${sym.err} ${c.red("Error stopping chorus:")}`, error);
+        console.error(
+          `${sym.err} ${c.red("Error stopping Polyphony:")}`,
+          error,
+        );
         process.exit(1);
       }
     });
