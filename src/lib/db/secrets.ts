@@ -1,9 +1,13 @@
-import { z } from 'zod';
-import { getDb } from './connection.js';
+import { z } from "zod";
+import { getDb } from "./connection.js";
 
 const SecretSchema = z.object({
   provider: z.string(),
-  kind: z.enum(['api_key', 'cli_subscription']),
+  // 'gh_app' added for the PR-babysit GitHub App bundle: the row value
+  // is a JSON blob holding app_id + private_key (PKCS#8 PEM) + webhook
+  // secret. Stored under provider='github_app' (single global config —
+  // chorus is a single-tenant daemon today).
+  kind: z.enum(["api_key", "cli_subscription", "gh_app"]),
   value: z.string(),
   meta: z.string().nullable(),
   updated_at: z.number().int(),
@@ -14,31 +18,37 @@ export type Secret = z.infer<typeof SecretSchema>;
 export const secrets = {
   async set(
     provider: string,
-    kind: 'api_key' | 'cli_subscription',
+    kind: "api_key" | "cli_subscription" | "gh_app",
     value: string,
     meta?: Record<string, unknown>,
   ): Promise<void> {
     const db = await getDb();
     await db.execute({
-      sql: 'INSERT OR REPLACE INTO secrets (provider, kind, value, meta, updated_at) VALUES (?, ?, ?, ?, ?)',
-      args: [provider, kind, value, meta ? JSON.stringify(meta) : null, Date.now()],
+      sql: "INSERT OR REPLACE INTO secrets (provider, kind, value, meta, updated_at) VALUES (?, ?, ?, ?, ?)",
+      args: [
+        provider,
+        kind,
+        value,
+        meta ? JSON.stringify(meta) : null,
+        Date.now(),
+      ],
     });
   },
 
   async get(provider: string): Promise<Secret | null> {
     const db = await getDb();
     const result = await db.execute({
-      sql: 'SELECT * FROM secrets WHERE provider = ?',
+      sql: "SELECT * FROM secrets WHERE provider = ?",
       args: [provider],
     });
     if (result.rows.length === 0) return null;
     return SecretSchema.parse(result.rows[0]);
   },
 
-  async list(): Promise<Omit<Secret, 'value'>[]> {
+  async list(): Promise<Omit<Secret, "value">[]> {
     const db = await getDb();
     const result = await db.execute(
-      'SELECT provider, kind, meta, updated_at FROM secrets',
+      "SELECT provider, kind, meta, updated_at FROM secrets",
     );
     return result.rows.map((row) =>
       SecretSchema.omit({ value: true })
@@ -56,7 +66,7 @@ export const secrets = {
   async delete(provider: string): Promise<boolean> {
     const db = await getDb();
     const result = await db.execute({
-      sql: 'DELETE FROM secrets WHERE provider = ?',
+      sql: "DELETE FROM secrets WHERE provider = ?",
       args: [provider],
     });
     return Number(result.rowsAffected ?? 0) > 0;
