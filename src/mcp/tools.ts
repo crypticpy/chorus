@@ -528,6 +528,10 @@ export async function createChat(input: unknown) {
   const parsed = CreateChatSchema.parse(input);
   const templateId = resolveTemplateId(parsed);
 
+  // We always send a `repoPath` — `safeCwd()` is the deliberate fallback so
+  // MCP callers who omit the field still get a sensible default (mirrors the
+  // CLI `chorus chat …` behaviour). The conditional spread below is dead
+  // (line above already sent the same value); collapsed for clarity.
   const repoPath = parsed.repoPath ?? safeCwd();
 
   const result = await daemonFetch<DaemonChatRow>("/chats", {
@@ -538,7 +542,6 @@ export async function createChat(input: unknown) {
       files: parsed.files,
       repoPath,
       ...(parsed.artifact !== undefined ? { artifact: parsed.artifact } : {}),
-      ...(parsed.repoPath !== undefined ? { repoPath: parsed.repoPath } : {}),
     }),
   });
 

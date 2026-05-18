@@ -154,8 +154,10 @@ async function initDb(): Promise<Client> {
   // enabled voice at full capacity regardless of voice.tier. Default 0 on
   // backfill so audit/orchestrate runs honour the tier matching.
   if (!has("bypass_quota"))
+    // CHECK mirrors schema.sql so backfilled rows on existing DBs get the
+    // same scheduler-input guard as fresh installs.
     await db.execute(
-      "ALTER TABLE chats ADD COLUMN bypass_quota INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE chats ADD COLUMN bypass_quota INTEGER NOT NULL DEFAULT 0 CHECK (bypass_quota IN (0, 1))",
     );
   await db.execute(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_slug ON chats(slug) WHERE slug IS NOT NULL",
@@ -228,11 +230,13 @@ async function initDb(): Promise<Client> {
   // captured for future enforcement; not used by the scheduler today.
   if (!hasVoiceCol("tier")) {
     await db.execute(
-      "ALTER TABLE voices ADD COLUMN tier TEXT NOT NULL DEFAULT 'medium'",
+      "ALTER TABLE voices ADD COLUMN tier TEXT NOT NULL DEFAULT 'medium' CHECK (tier IN ('low', 'medium', 'high'))",
     );
   }
   if (!hasVoiceCol("monthly_budget_usd")) {
-    await db.execute("ALTER TABLE voices ADD COLUMN monthly_budget_usd REAL");
+    await db.execute(
+      "ALTER TABLE voices ADD COLUMN monthly_budget_usd REAL CHECK (monthly_budget_usd IS NULL OR monthly_budget_usd >= 0)",
+    );
   }
 
   // is_complete on templates — added in v0.8.3 to gate "Use template"

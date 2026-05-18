@@ -14,14 +14,19 @@ const VoiceRowSchema = z.object({
   source: z.enum(["cli", "api"]),
   provider: z.string(),
   model_id: z.string(),
+  // Mirrors `Lineage` in src/daemon/agents/types.ts. New lineages must be
+  // added in both places (and in src/daemon/routes/voices.ts) — the missing
+  // entry surfaces as a zod parse failure when the route validates the
+  // payload, well after it would have flowed through other layers.
   lineage: z.enum([
     "anthropic",
     "openai",
     "google",
     "opencode",
     "moonshot",
-    "grok",
+    "openrouter",
     "local",
+    "grok",
   ]),
   vendor_family: z.string().nullable(),
   input_cost_per_mtok: z.number().nullable(),
@@ -65,8 +70,9 @@ export interface VoiceUpsertInput {
     | "google"
     | "opencode"
     | "moonshot"
-    | "grok"
-    | "local";
+    | "openrouter"
+    | "local"
+    | "grok";
   vendor_family?: string | null;
   input_cost_per_mtok?: number | null;
   output_cost_per_mtok?: number | null;

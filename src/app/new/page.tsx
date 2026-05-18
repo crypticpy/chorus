@@ -145,11 +145,12 @@ function NewChatPageInner() {
     setCreateError(null);
     startTransition(async () => {
       try {
-        const trimmedRepo = repoPath.trim();
+        // PR flow runs against the GitHub PR data only — never forward the
+        // shared `repoPath` state, which may hold a stale value from a prior
+        // mode switch even though the (disabled) input shows blank.
         const chat = await createChatFromPr({
           url: trimmed,
           templateId: template.id,
-          ...(trimmedRepo.length > 0 ? { repoPath: trimmedRepo } : {}),
           yolo: yoloMode,
         });
         router.push(`/runs/${chat.slug || chat.id}`);
@@ -167,8 +168,12 @@ function NewChatPageInner() {
       setCreateError("Repo path is required for an audit run.");
       return;
     }
-    if (!trimmedRepo.startsWith("/")) {
-      setCreateError("Repo path must be absolute (start with `/`).");
+    // Accept POSIX absolute (`/repo`), Windows drive-letter (`C:\repo` or
+    // `C:/repo`), and Windows UNC (`\\server\share`) paths. The daemon
+    // already handles all three via cli-detect / runtime-path; rejecting
+    // them here made the audit-a-repo tab unusable on Windows clients.
+    if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(trimmedRepo)) {
+      setCreateError("Repo path must be absolute.");
       return;
     }
     // Convention: each preset ships as its own built-in template id so
@@ -444,8 +449,8 @@ function NewChatPageInner() {
             <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
               Chorus shells out to{" "}
               <code className="rounded bg-muted px-1">gh</code> on this machine
-              to fetch the PR's description, diff, and existing comments. You
-              must be logged in via{" "}
+              to fetch the PR&apos;s description, diff, and existing comments.
+              You must be logged in via{" "}
               <code className="rounded bg-muted px-1">gh auth login</code>.
             </p>
             <input
@@ -481,9 +486,9 @@ function NewChatPageInner() {
                 Audit lens
               </span>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
-                Each preset frames the audit reviewer's worldview. The reviewer
-                reads your repo and emits a structured checklist — you approve
-                it before the orchestrator fans the work out to workers.
+                Each preset frames the audit reviewer&apos;s worldview. The
+                reviewer reads your repo and emits a structured checklist — you
+                approve it before the orchestrator fans the work out to workers.
               </p>
             </div>
             <div className="mb-4 grid grid-cols-1 gap-1.5 sm:grid-cols-2">

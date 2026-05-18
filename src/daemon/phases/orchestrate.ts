@@ -364,9 +364,41 @@ export async function runOrchestratePhase(
 
     // Always start each worker from the original starting branch so we
     // don't stack workers on top of each other. `git checkout
-    // <startingBranch>` is a no-op when we're already on it.
+    // <startingBranch>` is a no-op when we're already on it. Pre-fix this
+    // result was ignored — if checkout failed (dirty working tree, locked
+    // index from a parallel CLI, etc.), subsequent workers would stack on
+    // top of the previous worker's branch, polluting diff stats and
+    // triggering ugly merge conflicts on open-pr.
     if (startingBranch && startingBranch !== "HEAD") {
-      git(repoPath, ["checkout", startingBranch]);
+      const checkoutResult = git(repoPath, ["checkout", startingBranch]);
+      if (!checkoutResult.ok) {
+        const detail = `git checkout ${startingBranch} failed: ${checkoutResult.stderr.trim()}`;
+        const entry: OrchestrateManifestEntry = {
+          idx,
+          itemId: item.id,
+          voiceId: picked.voiceId,
+          branch,
+          diffStat: "",
+          status: "failed",
+          error: detail,
+        };
+        manifest.workers.push(entry);
+        onEvent({
+          chatId,
+          type: "phase_failed",
+          payload: {
+            phaseId: phase.id,
+            phaseIdx,
+            kind: "orchestrate",
+            workerIdx: idx,
+            itemId: item.id,
+            reason: "checkout_failed",
+            detail,
+          },
+          ts: Date.now(),
+        });
+        continue;
+      }
     }
 
     const branchResult = createWorkerBranch(repoPath, branch);

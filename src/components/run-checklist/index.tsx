@@ -87,8 +87,8 @@ export function RunChecklist({ items, onSubmit }: RunChecklistProps) {
         </span>
       </div>
       <p className="mb-3 text-[11px] text-muted-foreground">
-        Trim the items you don't want shipped to workers. Each selected item
-        runs on its own git branch under{" "}
+        Trim the items you don&apos;t want shipped to workers. Each selected
+        item runs on its own git branch under{" "}
         <code className="rounded bg-muted px-1">
           chorus/&lt;chatId&gt;/worker-N
         </code>

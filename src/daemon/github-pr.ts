@@ -219,7 +219,14 @@ function classifyGhFailure(stderr: string): PrFailReason {
   if (
     s.includes("command not found") ||
     s.includes("gh: command not found") ||
-    s.includes("is not recognized")
+    s.includes("is not recognized") ||
+    // Node's `spawn` surfaces a missing binary as `Error: spawn gh ENOENT`
+    // — `runAsync` puts that string into stderr. Without this branch the
+    // documented "first-run pastes a PR URL before installing gh" UX path
+    // returns the opaque `unknown`/`db_error` instead of the actionable
+    // `gh_not_installed` guidance.
+    s.includes("spawn gh enoent") ||
+    s.includes("enoent")
   ) {
     return "gh_not_installed";
   }
@@ -336,7 +343,18 @@ function composeArtifact(args: ComposeArgs): string {
     lines.push("_(no diff content returned)_");
   } else {
     const byteLen = Buffer.byteLength(diff, "utf-8");
-    lines.push("```diff");
+    // Diff bodies for docs/Markdown PRs frequently contain literal triple-
+    // backtick fences (or worse, ````-quad). A fixed ``` fence would close
+    // early and let the rest of the diff escape into the surrounding
+    // artifact prose, corrupting the prompt boundary for review-only flows.
+    // Pick a fence one backtick longer than the longest run inside the
+    // diff (min 3).
+    let longestBacktickRun = 0;
+    for (const m of diff.matchAll(/`+/g)) {
+      if (m[0].length > longestBacktickRun) longestBacktickRun = m[0].length;
+    }
+    const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+    lines.push(`${fence}diff`);
     if (byteLen <= DIFF_CAP_BYTES) {
       lines.push(diff);
     } else {
@@ -350,7 +368,7 @@ function composeArtifact(args: ComposeArgs): string {
         `... (truncated — full diff was ${byteLen} bytes, cap is ${DIFF_CAP_BYTES} bytes)`,
       );
     }
-    lines.push("```");
+    lines.push(fence);
   }
 
   return lines.join("\n");

@@ -239,7 +239,7 @@ export async function registerClaudeMcpServer(opts: {
 
   fs.writeFileSync(
     CLAUDE_PROJECT_CONFIG_PATH,
-    JSON.stringify(next, null, 2),
+    JSON.stringify(next, null, 2) + "\n",
     "utf-8",
   );
   return {

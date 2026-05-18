@@ -12,19 +12,26 @@ import { z } from "zod";
 import { voices } from "../../lib/db/index.js";
 import {
   successResponse,
-  errorResponse,
   listEnvelope,
   sendError,
   type ApiResponse,
   type ListEnvelope,
 } from "../api-response.js";
 
+// Keep in sync with `Lineage` in src/daemon/agents/types.ts. The route-level
+// enum is the validation boundary for POST /voices + GET /voices?lineage=...;
+// missing values here cause 400s for legitimate openrouter/local/grok rows
+// even though the rest of the stack (cli-precheck, shim registry, voice tier
+// scheduler) already supports them.
 const Lineage = z.enum([
   "anthropic",
   "openai",
   "google",
   "opencode",
   "moonshot",
+  "openrouter",
+  "local",
+  "grok",
 ]);
 const Source = z.enum(["cli", "api"]);
 
@@ -94,7 +101,7 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       return successResponse(listEnvelope(items));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -115,7 +122,7 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       return successResponse(v);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -149,7 +156,7 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       return successResponse(row);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -179,7 +186,7 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       return successResponse(row);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 
@@ -189,13 +196,13 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.delete<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>("/voices/:id", async (request) => {
+  }>("/voices/:id", async (request, reply) => {
     try {
       await voices.delete(request.params.id);
       return successResponse({ id: request.params.id, deleted: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 }

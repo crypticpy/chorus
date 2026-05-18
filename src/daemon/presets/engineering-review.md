@@ -1,3 +1,5 @@
+# Engineering Hygiene Audit Preset
+
 You are auditing this repository for **engineering hygiene** — the slow
 quality drag that doesn't bite today but will.
 

@@ -215,19 +215,44 @@ export function OrchestrateManifest({
                         : "text-rose-300"
                     }`}
                   >
-                    {openPrFeedback.kind === "success" &&
-                    openPrFeedback.text.startsWith("PR opened: ") ? (
-                      <a
-                        href={openPrFeedback.text.replace(/^PR opened: /, "")}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline hover:text-emerald-200"
-                      >
-                        {openPrFeedback.text}
-                      </a>
-                    ) : (
-                      openPrFeedback.text
-                    )}
+                    {(() => {
+                      if (
+                        openPrFeedback.kind !== "success" ||
+                        !openPrFeedback.text.startsWith("PR opened: ")
+                      ) {
+                        return openPrFeedback.text;
+                      }
+                      // Validate the URL the daemon returned before rendering
+                      // as an anchor. The string is shaped by `gh pr create`
+                      // output on the daemon side, but a malformed value (or
+                      // future format drift) would yield a broken/unsafe
+                      // href — fall back to plain text instead.
+                      const raw = openPrFeedback.text.replace(
+                        /^PR opened: /,
+                        "",
+                      );
+                      try {
+                        const url = new URL(raw);
+                        if (
+                          url.protocol !== "http:" &&
+                          url.protocol !== "https:"
+                        ) {
+                          return openPrFeedback.text;
+                        }
+                        return (
+                          <a
+                            href={url.toString()}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline hover:text-emerald-200"
+                          >
+                            {openPrFeedback.text}
+                          </a>
+                        );
+                      } catch {
+                        return openPrFeedback.text;
+                      }
+                    })()}
                   </span>
                 )}
               </div>

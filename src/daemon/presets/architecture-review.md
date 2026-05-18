@@ -1,3 +1,5 @@
+# Architecture Drift Audit Preset
+
 You are auditing this repository for **architectural drift** — places where
 the layering or module boundaries have eroded.
 

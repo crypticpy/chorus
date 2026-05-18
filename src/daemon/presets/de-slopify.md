@@ -1,3 +1,5 @@
+# De-Slopify Audit Preset
+
 You are auditing this repository for **AI-generated code smell** — patterns
 that suggest a model wrote the code without enough taste pruning.
 

@@ -101,7 +101,11 @@ export function buildHeadlessArgs(opts: HeadlessSpawnOptions): string[] {
     args.push("-c", 'sandbox_mode="read-only"');
   }
 
-  if (opts.networkAccess) {
+  // Network access — opt-in. `github` transport always needs network so the
+  // headless path matches buildLaunchCommand (tmux). Without this, headless
+  // `codex exec` runs against GitHub transport could not call out to gh /
+  // github.com and would fail in confusing ways.
+  if (opts.networkAccess || opts.transport === "github") {
     args.push("-c", "sandbox_workspace_write.network_access=true");
   }
 

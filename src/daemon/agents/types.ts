@@ -257,6 +257,12 @@ export interface HeadlessSpawnOptions {
   autoApprove?: boolean;
   /** Allow outbound network. */
   networkAccess?: boolean;
+  /**
+   * Folder/github/tmux. Default `folder`. Matches `AgentSpawnOptions.transport`
+   * so headless paths can mirror tmux-launch network/permissions decisions
+   * (e.g. `github` always needs network).
+   */
+  transport?: Transport;
   /** Cancel propagation (chat cancel button, daemon shutdown). */
   abortSignal?: AbortSignal;
   /** Hard timeout — process is killed after this. Default 600_000 (10 min). */

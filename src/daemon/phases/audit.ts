@@ -111,7 +111,32 @@ export async function runAuditPhase(
     ts: Date.now(),
   });
 
-  const presetMarkdown = loadPresetPrompt(phase.preset);
+  // Wrap preset-load + structured request together: if the packaged preset
+  // file is missing/unreadable, `loadPresetPrompt` throws synchronously and
+  // would reject `runAuditPhase` *after* phase_start was already emitted,
+  // tearing the run down with no structured failure event for the cockpit.
+  // Convert into a `phase_failed` with the same shape used below for
+  // model-side failures.
+  let presetMarkdown: string;
+  try {
+    presetMarkdown = loadPresetPrompt(phase.preset);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    onEvent({
+      chatId,
+      type: "phase_failed",
+      payload: {
+        phaseId: phase.id,
+        phaseIdx,
+        kind: phase.kind,
+        role: "audit",
+        reason: "preset_load_failed",
+        detail: `Audit preset "${phase.preset}" could not be loaded: ${detail}`,
+      },
+      ts: Date.now(),
+    });
+    return { completed: !abortSignal.aborted, items: [], rawText: "" };
+  }
   const prompt = `${presetMarkdown}\n\nUser intent: ${work}\n`;
 
   const result = await requestStructured({
@@ -152,6 +177,34 @@ export async function runAuditPhase(
       items: [],
       rawText: result.rawText ?? "",
     };
+  }
+
+  // Validate AuditItem.id uniqueness. The schema asks the model for unique
+  // IDs in the prompt but doesn't enforce it; orchestrate's checklist
+  // selection is id-based, so duplicate IDs would silently double-fan-out
+  // (or drop) a checklist item. Persist whatever raw text we got so a
+  // debugger can see the duplicate, then fail the phase with a structured
+  // reason instead of letting it propagate.
+  const seenIds = new Set<string>();
+  for (const item of result.data.items) {
+    if (seenIds.has(item.id)) {
+      fs.writeFileSync(path.join(auditDir, "output.md"), result.rawText);
+      onEvent({
+        chatId,
+        type: "phase_failed",
+        payload: {
+          phaseId: phase.id,
+          phaseIdx,
+          kind: phase.kind,
+          role: "audit",
+          reason: "invalid_output",
+          detail: `Duplicate audit item id: ${item.id}`,
+        },
+        ts: Date.now(),
+      });
+      return { completed: true, items: [], rawText: result.rawText };
+    }
+    seenIds.add(item.id);
   }
 
   // Persist artifacts. Raw first (mirrors review-only's per-participant
