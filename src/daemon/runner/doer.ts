@@ -102,7 +102,34 @@ export async function runDoerHeadless(args: {
   const startedAt = Date.now();
 
   // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
-  fs.writeFileSync(answerFile, "");
+  // EACCES / ENOSPC here happens before the try block below, so without this
+  // guard we'd skip the cli_error emit AND skip the `## DOER FAILED` artifact
+  // path, leaving the chat dir empty and the cockpit silent.
+  try {
+    fs.writeFileSync(answerFile, "");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    onEvent({
+      chatId,
+      type: "cli_error",
+      payload: {
+        phaseId: phase.id,
+        phaseKind: phase.kind,
+        phaseIdx: 0,
+        round,
+        role: "doer",
+        agent: agentName,
+        error: {
+          kind: "answer_init_failed",
+          message: `Could not initialize answer.md: ${message}`,
+          cta: "Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.",
+          lineage: phase.doer.lineage,
+        },
+      },
+      ts: Date.now(),
+    });
+    return null;
+  }
   const writer = new StreamFileWriter(answerFile);
 
   const stream = shim.runHeadless({

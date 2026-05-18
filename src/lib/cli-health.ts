@@ -121,6 +121,12 @@ export function kindToStatus(kind: string): HealthStatus {
   switch (kind) {
     case "quota_exhausted":
       return "quota_exhausted";
+    // Explicit auth-failure kinds (grok login expiry, opencode token-revoke,
+    // etc.) collapse into `auth_invalid` alongside the legacy two cases so
+    // the cockpit fleet card renders the right "re-login" CTA instead of an
+    // opaque "unknown".
+    case "auth_invalid":
+    case "auth_missing":
     case "token_refresh_lost":
     case "mcp_handshake_failed":
       return "auth_invalid";

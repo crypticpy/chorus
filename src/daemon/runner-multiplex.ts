@@ -317,11 +317,23 @@ export function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     // trail.
     if (event.type === "cli_error" || event.type === "cli_warning") {
       const payload = event.payload as Record<string, unknown>;
-      const kind = payload.phaseKind as string | undefined;
-      const phaseKind: PhaseKind =
-        kind && (VALID_PHASE_KINDS as readonly string[]).includes(kind)
-          ? (kind as PhaseKind)
-          : "review";
+      const kindRaw = payload.phaseKind as string | undefined;
+      const hasPhaseScope =
+        typeof kindRaw === "string" &&
+        (VALID_PHASE_KINDS as readonly string[]).includes(kindRaw);
+      // Chat-scoped warnings (e.g. `attached_files_invalid` emitted before
+      // the runner picks a phase) arrive without `phaseKind`/`phaseIdx`/
+      // `role`. Pre-fix we coerced them into a synthetic `review`/`reviewer`
+      // phase event, which makes the audit trail attribute a chat-level
+      // problem to a fake reviewer slot. Skip persistence for those — the
+      // chatLogger path already captured the warning and live subscribers
+      // received it via the original `onEvent(...)`. This `if`-tree is
+      // structured so we still fall through to the `chat_done` branch when
+      // a later event arrives.
+      if (!hasPhaseScope) {
+        return;
+      }
+      const phaseKind = kindRaw as PhaseKind;
       const errorObj =
         (payload.error as Record<string, unknown> | undefined) ?? {};
       const message =

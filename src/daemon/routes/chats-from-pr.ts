@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import { logger } from "../../lib/logger.js";
 import {
-  errorResponse,
   sendError,
   successResponse,
   type ApiResponse,
@@ -173,7 +172,7 @@ export function registerChatsFromPrRoute(
         { requestId: request.id, err: message, route: "POST /chats/from-pr" },
         "chat-from-pr create failed",
       );
-      return errorResponse("db_error", message);
+      return sendError(reply, "db_error", message);
     }
   });
 }

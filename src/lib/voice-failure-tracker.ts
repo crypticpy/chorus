@@ -22,9 +22,9 @@
  * On any successful run for the same voice, the counter resets — so
  * a flaky day doesn't accumulate into auto-disable forever.
  */
-import { settings } from './db/settings.js';
-import { voices } from './db/voices.js';
-import type { CliLineage } from './cli-health.js';
+import { settings } from "./db/settings.js";
+import { voices } from "./db/voices.js";
+import type { CliLineage } from "./cli-health.js";
 
 const COUNTER_KEY = (voiceId: string): string => `voice_failures.${voiceId}`;
 
@@ -91,25 +91,30 @@ export async function recordVoiceFailure(input: {
   const voice = await resolveVoice(input.lineage, input.model);
   if (!voice) return { disabled: false, voiceId: null };
 
-  // Skip the counter entirely when the upstream promised recovery.
-  // True rate limits should not contribute to the strike count —
-  // otherwise a transient daily-quota hit + a later permanent
-  // failure would trip the threshold on the first permanent strike
-  // instead of the second.
+  const key = COUNTER_KEY(voice.id);
+
+  // Upstream promised recovery (true rate limit). This should NOT contribute
+  // to the strike count — but it *should* break any prior permanent-failure
+  // streak. Otherwise a sequence like permanent-fail → resetAt-fail →
+  // permanent-fail would still be treated as two consecutive permanent
+  // strikes, tripping auto-disable too early.
   if (input.hasResetAt) {
+    const prevRaw = await settings.get(key);
+    if (typeof prevRaw === "number" && prevRaw > 0) {
+      await settings.set(key, 0);
+    }
     return { disabled: false, voiceId: voice.id };
   }
 
-  const key = COUNTER_KEY(voice.id);
   const raw = await settings.get(key);
-  const previous = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
+  const previous = typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
   const next = previous + 1;
   await settings.set(key, next);
 
   if (shouldAutoDisable(next, input.hasResetAt)) {
     await voices.update(voice.id, {
       enabled: false,
-      disabled_reason: 'auto_quota',
+      disabled_reason: "auto_quota",
     });
     // Reset the counter so a future re-enable doesn't trip on
     // stale state.
@@ -137,7 +142,7 @@ export async function recordVoiceSuccess(input: {
   const raw = await settings.get(key);
   // Skip the write when the counter is already 0 — saves a DB roundtrip
   // on the hot success path.
-  if (typeof raw === 'number' && raw > 0) {
+  if (typeof raw === "number" && raw > 0) {
     await settings.set(key, 0);
   }
 }

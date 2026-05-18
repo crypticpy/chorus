@@ -106,7 +106,12 @@ async function pollChat(
 ): Promise<ChatStatus> {
   let lastStatus = "";
   while (!signal.aborted) {
-    const r = await fetch(`${baseUrl}/chats/${chatId}`);
+    // Propagate the abort signal so a SIGINT or timeout interrupts the
+    // in-flight HTTP request immediately rather than waiting for the
+    // daemon to respond. Without this the loop only checks `signal.aborted`
+    // between calls and the sleep below, so a hung daemon could swallow
+    // the cancel for the full request timeout.
+    const r = await fetch(`${baseUrl}/chats/${chatId}`, { signal });
     if (!r.ok) throw new Error(`status fetch failed: ${r.status}`);
     const env = (await r.json()) as { data?: ChatStatus };
     const data = env.data;
@@ -125,7 +130,20 @@ async function pollChat(
     ) {
       return data;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Abort-aware sleep so a Ctrl-C or timeout wakes the loop immediately
+    // instead of waiting up to 1500ms for the next iteration.
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve();
+      const t = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, 1500);
+      const onAbort = (): void => {
+        clearTimeout(t);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
   throw new Error("aborted");
 }
@@ -287,21 +305,28 @@ export async function runQuickstart(
   // primary blocker — without cancel-on-SIGINT, every quickstart that
   // gets interrupted leaves a chat consuming subscription quota.
   const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), 4 * 60_000);
   let cancelled = false;
-  const onSigint = (): void => {
+  // Shared best-effort cancel — used by both the timeout and SIGINT
+  // paths. Without this the timeout branch only aborts the local poller
+  // and leaves the daemon happily reviewing in the background, burning
+  // subscription quota long after `chorus quickstart` exited.
+  const cancelRemote = (): void => {
     if (cancelled) return;
     cancelled = true;
-    ac.abort();
-    // Best-effort daemon cancel. Synchronous-ish — we don't await
-    // because the SIGINT handler should return quickly so Node can
-    // exit cleanly. The daemon's /chats/:id/cancel route is idempotent
-    // so a double-cancel is harmless.
     void fetch(`${baseUrl}/chats/${chatId}/cancel`, { method: "POST" }).catch(
       () => {
         /* daemon may already be tearing down — best effort */
       },
     );
+  };
+  const timeout = setTimeout(() => {
+    ac.abort();
+    cancelRemote();
+  }, 4 * 60_000);
+  const onSigint = (): void => {
+    if (cancelled) return;
+    ac.abort();
+    cancelRemote();
     console.log("");
     console.log(`  ${c.gray("Ctrl-C — cancelling chat " + chatId + "...")}`);
   };

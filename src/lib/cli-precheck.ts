@@ -250,14 +250,33 @@ export async function precheckLineage(
   // Layer 3: per-CLI runtime config. Today only kimi needs this — without
   // a top-level `default_model` line in ~/.kimi/config.toml the subprocess
   // exits 1 with "LLM not set" the first time chorus dispatches to it.
-  if (lineage === "moonshot" && !kimiHasDefaultModel()) {
-    return {
-      ok: false,
-      reason: "config_missing",
-      message:
-        "kimi has no default model configured (~/.kimi/config.toml is missing `default_model`).",
-      cta: 'Run `kimi` interactively once and pick a model, or add a `default_model = "..."` line to ~/.kimi/config.toml.',
-    };
+  //
+  // Gate strictly on actual kimi-cli creds: a moonshot voice routed via
+  // opencode (`opencode --model opencode-go/kimi-k2.6`) is authed by
+  // opencode and never touches ~/.kimi/. Hard-failing those healthy setups
+  // here would reject them before any spawn. Detect by re-probing only the
+  // kimi-shaped candidate paths from CRED_PATHS.moonshot.
+  if (lineage === "moonshot") {
+    const kimiCredPresent = [
+      path.join(os.homedir(), ".kimi", "auth.json"),
+      path.join(os.homedir(), ".kimi", "credentials", "kimi-code.json"),
+    ].some((p) => {
+      try {
+        const stat = fs.statSync(p);
+        return stat.isFile() && stat.size > 0;
+      } catch {
+        return false;
+      }
+    });
+    if (kimiCredPresent && !kimiHasDefaultModel()) {
+      return {
+        ok: false,
+        reason: "config_missing",
+        message:
+          "kimi has no default model configured (~/.kimi/config.toml is missing `default_model`).",
+        cta: 'Run `kimi` interactively once and pick a model, or add a `default_model = "..."` line to ~/.kimi/config.toml.',
+      };
+    }
   }
 
   return { ok: true };

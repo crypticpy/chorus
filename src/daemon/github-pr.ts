@@ -219,7 +219,14 @@ function classifyGhFailure(stderr: string): PrFailReason {
   if (
     s.includes("command not found") ||
     s.includes("gh: command not found") ||
-    s.includes("is not recognized")
+    s.includes("is not recognized") ||
+    // Node's `spawn` surfaces a missing binary as `Error: spawn gh ENOENT`
+    // — `runAsync` puts that string into stderr. Without this branch the
+    // documented "first-run pastes a PR URL before installing gh" UX path
+    // returns the opaque `unknown`/`db_error` instead of the actionable
+    // `gh_not_installed` guidance.
+    s.includes("spawn gh enoent") ||
+    s.includes("enoent")
   ) {
     return "gh_not_installed";
   }
