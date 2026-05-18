@@ -213,10 +213,15 @@ export async function fetchLatestVersion(
   packageName = "@crypticpy/polyphony",
 ): Promise<string | null> {
   try {
+    // Scoped names (`@scope/pkg`) need the `/` percent-encoded as `%2F`
+    // for npm's dist-tags endpoint to resolve them — otherwise the
+    // registry interprets the slash as a path separator and 404s.
+    // encodeURIComponent is a no-op for unscoped names like `chorus-codes`.
+    const encodedName = encodeURIComponent(packageName);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 5000);
     const res = await fetch(
-      `https://registry.npmjs.org/-/package/${packageName}/dist-tags`,
+      `https://registry.npmjs.org/-/package/${encodedName}/dist-tags`,
       { signal: ac.signal },
     );
     clearTimeout(timer);
