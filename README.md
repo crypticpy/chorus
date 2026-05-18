@@ -242,7 +242,7 @@ Any template can include a `verify` phase. It runs your project's `package.json#
 
 ### PR-babysit
 
-Once you've got a PR open and the review bots are starting to comment, `chorus babysit register <pr-url>` puts that PR on an autonomous loop. The daemon polls the PR, judges each new bot comment (apply-trivial / apply-targeted / apply-architectural / reply-disagree / reply-ack / defer-to-human), pushes fixes or posts replies, runs verify on each fix, and squash-merges when CI is green and two quiet ticks have passed. Inspect with `chorus babysit show <id>`; pause with `chorus babysit pause <id>`.
+Once you've got a PR open and the review bots are starting to comment, `chorus babysit register <pr-url>` puts that PR on an autonomous loop. The daemon polls the PR, judges each new bot comment (apply-trivial / apply-targeted / apply-architectural / reply-disagree / reply-ack / defer-to-human), pushes fixes or posts replies, and runs verify on each fix. After two consecutive quiet ticks the daemon sits in `quiet_check` and waits — it does not call `gh pr merge` itself; you (or the `/babysit-pr` Claude Code skill, which wraps this loop and adds the merge gate) do the squash-merge once CI is green. Inspect with `chorus babysit show <id>`; pause with `chorus babysit pause <id>`.
 
 <details>
 <summary><b>Custom template example</b></summary>
