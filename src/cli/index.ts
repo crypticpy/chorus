@@ -39,7 +39,7 @@ program.addHelpText("beforeAll", () => {
   if (!initialised) {
     return [
       "",
-      `  ${sym.rocket} ${c.bold("Welcome to Chorus")} ${c.dim("— two commands to get going:")}`,
+      `  ${sym.rocket} ${c.bold("Welcome to Polyphony")} ${c.dim("— two commands to get going:")}`,
       "",
       `    ${c.cyan("1.")} ${c.bold("chorus init")}     ${c.dim("register MCP with your editors + seed templates + detect CLIs")}`,
       `    ${c.cyan("2.")} ${c.bold("chorus start")}    ${c.dim("bring up the daemon + cockpit")}`,

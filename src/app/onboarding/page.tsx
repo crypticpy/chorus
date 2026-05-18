@@ -55,14 +55,15 @@ export default function OnboardingPage() {
   // OpenCode AND the binary is installed. The user picks which
   // subscription models chorus should expose as voices; persisted in
   // submit.ts.
-  const [opencodeModels, setOpencodeModels] = useState<OpencodeModelsResult | null>(
+  const [opencodeModels, setOpencodeModels] =
+    useState<OpencodeModelsResult | null>(null);
+  const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(
     null,
   );
-  const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
   const [opencodeModelsLoading, setOpencodeModelsLoading] = useState(false);
-  const [selectedOpencodeModels, setSelectedOpencodeModels] = useState<Set<string>>(
-    new Set(),
-  );
+  const [selectedOpencodeModels, setSelectedOpencodeModels] = useState<
+    Set<string>
+  >(new Set());
 
   useEffect(() => {
     // `cancelled` guards every setter against unmount-during-fetch
@@ -192,8 +193,7 @@ export default function OnboardingPage() {
     if (!value) {
       setManualError((prev) => ({
         ...prev,
-        [id]:
-          "Enter the full path to the CLI program (e.g. /usr/local/bin/claude).",
+        [id]: "Enter the full path to the CLI program (e.g. /usr/local/bin/claude).",
       }));
       return;
     }
@@ -264,7 +264,9 @@ export default function OnboardingPage() {
   const handleSubmit = () => {
     setError(null);
     if (filledCount === 0) {
-      setError("Pick at least one CLI or paste at least one API key to continue.");
+      setError(
+        "Pick at least one CLI or paste at least one API key to continue.",
+      );
       return;
     }
     startTransition(async () => {
@@ -295,7 +297,7 @@ export default function OnboardingPage() {
           </div>
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground">
-              Welcome to Chorus
+              Welcome to Polyphony
             </p>
             <h1 className="text-2xl font-semibold tracking-tight">
               Connect at least one model to begin
@@ -305,8 +307,8 @@ export default function OnboardingPage() {
 
         <p className="mb-8 text-sm leading-relaxed text-muted-foreground">
           Chorus runs your prompt past 2–4 LLMs of different lineages and
-          synthesises consensus. Pick the CLI subscriptions you already have,
-          or paste API keys. You can change these later in Settings.
+          synthesises consensus. Pick the CLI subscriptions you already have, or
+          paste API keys. You can change these later in Settings.
         </p>
 
         <CliSection

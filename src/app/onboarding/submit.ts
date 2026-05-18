@@ -1,13 +1,6 @@
-import {
-  DaemonError,
-  updateSettings,
-  upsertSecret,
-} from "@/lib/api";
+import { DaemonError, updateSettings, upsertSecret } from "@/lib/api";
 import type { OpencodeModelsResult } from "@/lib/api/orchestrators";
-import {
-  updatePermissions,
-  type SandboxProfile,
-} from "@/lib/api/settings";
+import { updatePermissions, type SandboxProfile } from "@/lib/api/settings";
 import { CLIS, classifyOpencodeClient } from "./helpers";
 
 export interface OnboardingSubmitArgs {
@@ -24,7 +17,9 @@ export interface OnboardingSubmitArgs {
  * Persist the onboarding form. Throws DaemonError when the daemon
  * rejects a write; the caller surfaces the message and keeps the form.
  */
-export async function submitOnboarding(args: OnboardingSubmitArgs): Promise<void> {
+export async function submitOnboarding(
+  args: OnboardingSubmitArgs,
+): Promise<void> {
   for (const cliId of args.selectedClis) {
     const cli = CLIS.find((c) => c.id === cliId);
     if (!cli) continue;
@@ -64,9 +59,8 @@ export async function submitOnboarding(args: OnboardingSubmitArgs): Promise<void
 }
 
 async function persistOpencodePicks(args: OnboardingSubmitArgs): Promise<void> {
-  const { listVoices, updateVoice, createVoice } = await import(
-    "@/lib/api/voices"
-  );
+  const { listVoices, updateVoice, createVoice } =
+    await import("@/lib/api/voices");
   const existing = new Map(
     (await listVoices({ provider: "opencode-cli" }).catch(() => [])).map(
       (v) => [v.id, v] as const,
@@ -110,5 +104,5 @@ async function persistOpencodePicks(args: OnboardingSubmitArgs): Promise<void> {
 export function describeError(err: unknown): string {
   return err instanceof DaemonError
     ? err.message
-    : "Could not save. Is the Chorus daemon running?";
+    : "Could not save. Is the Polyphony daemon running?";
 }

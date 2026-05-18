@@ -1,15 +1,16 @@
 {
-  "name": "chorus-codes",
+  "name": "@crypticpy/polyphony",
   "version": "0.8.26",
-  "description": "Driver-agnostic multi-LLM peer review for code decisions. Bring your own CLI; Chorus convenes 2-4 other LLMs to review the work before you ship.",
+  "description": "Driver-agnostic multi-LLM peer review for code decisions. Bring your own CLI; Polyphony convenes 2-4 other LLMs to review the work before you ship.",
   "license": "Apache-2.0",
-  "author": "99x Agency",
-  "homepage": "https://chorus.codes",
+  "author": "crypticpy",
+  "homepage": "https://github.com/crypticpy/chorus",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chorus-codes/chorus.git"
+    "url": "https://github.com/crypticpy/chorus.git"
   },
   "bin": {
+    "polyphony": "./bin/chorus.mjs",
     "chorus": "./bin/chorus.mjs"
   },
   "publishConfig": {

@@ -39,18 +39,18 @@ async function getHomePageData(): Promise<HomeData> {
     const error =
       err instanceof DaemonError
         ? err.message
-        : "Failed to reach the Chorus daemon.";
+        : "Failed to reach the Polyphony daemon.";
     return { stats: null, templates: [], secrets: [], settings: null, error };
   }
 }
 
 export default async function HomePage() {
-  const { stats, templates, secrets, settings, error } = await getHomePageData();
+  const { stats, templates, secrets, settings, error } =
+    await getHomePageData();
 
   // First-run gate: redirect to /onboarding if user has no credentials
   // and hasn't explicitly marked the wizard as completed.
-  const onboarded =
-    Boolean(settings?.onboarded) || secrets.length > 0;
+  const onboarded = Boolean(settings?.onboarded) || secrets.length > 0;
   if (!error && !onboarded) {
     redirect("/onboarding");
   }
@@ -171,4 +171,3 @@ function ActiveHome({ stats }: ActiveHomeProps) {
     </>
   );
 }
-

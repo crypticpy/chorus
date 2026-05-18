@@ -44,7 +44,7 @@ export function registerStartCommand(program: Command): void {
       "--daemon-only",
       "Skip cockpit (Next.js UI). Used by MCP auto-start.",
     )
-    .description("Start the Chorus daemon (PM2-style fork)")
+    .description("Start the Polyphony daemon (PM2-style fork)")
     .action(async (options: { ui?: boolean; daemonOnly?: boolean }) => {
       try {
         const chorusDir = path.join(os.homedir(), ".chorus");
