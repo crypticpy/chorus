@@ -53,15 +53,27 @@ export function registerChatsFromPrRoute(
     try {
       const { url, templateId, repoPath, yolo } = request.body ?? {};
 
-      if (!url || !templateId) {
+      // Strict type checks at the boundary. The Body generic above describes
+      // the *expected* shape but Fastify will still hand us whatever the
+      // client sent — a truthy non-string `url` (e.g. `{}` or `42`) would
+      // slip past `if (!url)` and crash later inside parsePrUrl.
+      if (
+        typeof url !== "string" ||
+        url.trim().length === 0 ||
+        typeof templateId !== "string" ||
+        templateId.trim().length === 0
+      ) {
         return sendError(
           reply,
           "validation",
-          "url and templateId are required",
+          "url and templateId are required (must be non-empty strings)",
         );
       }
+      if (yolo !== undefined && typeof yolo !== "boolean") {
+        return sendError(reply, "validation", "yolo must be a boolean");
+      }
 
-      const parsed = parsePrUrl(url);
+      const parsed = parsePrUrl(url.trim());
       if (!parsed) {
         return sendError(
           reply,

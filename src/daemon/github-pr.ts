@@ -343,7 +343,18 @@ function composeArtifact(args: ComposeArgs): string {
     lines.push("_(no diff content returned)_");
   } else {
     const byteLen = Buffer.byteLength(diff, "utf-8");
-    lines.push("```diff");
+    // Diff bodies for docs/Markdown PRs frequently contain literal triple-
+    // backtick fences (or worse, ````-quad). A fixed ``` fence would close
+    // early and let the rest of the diff escape into the surrounding
+    // artifact prose, corrupting the prompt boundary for review-only flows.
+    // Pick a fence one backtick longer than the longest run inside the
+    // diff (min 3).
+    let longestBacktickRun = 0;
+    for (const m of diff.matchAll(/`+/g)) {
+      if (m[0].length > longestBacktickRun) longestBacktickRun = m[0].length;
+    }
+    const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+    lines.push(`${fence}diff`);
     if (byteLen <= DIFF_CAP_BYTES) {
       lines.push(diff);
     } else {
@@ -357,7 +368,7 @@ function composeArtifact(args: ComposeArgs): string {
         `... (truncated — full diff was ${byteLen} bytes, cap is ${DIFF_CAP_BYTES} bytes)`,
       );
     }
-    lines.push("```");
+    lines.push(fence);
   }
 
   return lines.join("\n");

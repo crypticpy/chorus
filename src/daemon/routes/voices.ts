@@ -18,12 +18,20 @@ import {
   type ListEnvelope,
 } from "../api-response.js";
 
+// Keep in sync with `Lineage` in src/daemon/agents/types.ts. The route-level
+// enum is the validation boundary for POST /voices + GET /voices?lineage=...;
+// missing values here cause 400s for legitimate openrouter/local/grok rows
+// even though the rest of the stack (cli-precheck, shim registry, voice tier
+// scheduler) already supports them.
 const Lineage = z.enum([
   "anthropic",
   "openai",
   "google",
   "opencode",
   "moonshot",
+  "openrouter",
+  "local",
+  "grok",
 ]);
 const Source = z.enum(["cli", "api"]);
 

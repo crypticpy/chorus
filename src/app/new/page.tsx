@@ -168,8 +168,12 @@ function NewChatPageInner() {
       setCreateError("Repo path is required for an audit run.");
       return;
     }
-    if (!trimmedRepo.startsWith("/")) {
-      setCreateError("Repo path must be absolute (start with `/`).");
+    // Accept POSIX absolute (`/repo`), Windows drive-letter (`C:\repo` or
+    // `C:/repo`), and Windows UNC (`\\server\share`) paths. The daemon
+    // already handles all three via cli-detect / runtime-path; rejecting
+    // them here made the audit-a-repo tab unusable on Windows clients.
+    if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(trimmedRepo)) {
+      setCreateError("Repo path must be absolute.");
       return;
     }
     // Convention: each preset ships as its own built-in template id so
