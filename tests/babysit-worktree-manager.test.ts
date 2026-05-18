@@ -14,7 +14,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import {
   _setWorktreeRootForTests,
   ensureWorktree,
@@ -29,8 +29,11 @@ let remoteDir: string;
 let sourceRepo: string;
 let worktreeRoot: string;
 
-function git(args: string, cwd: string): string {
-  return execSync(`git ${args}`, {
+// argv form so paths containing spaces/shell-meta survive correctly
+// (tmp paths on macOS land in /private/var/folders which is safe, but
+// the helper should not assume that).
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
     cwd,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -45,26 +48,26 @@ beforeEach(() => {
 
   // 1. Bare remote.
   fs.mkdirSync(remoteDir);
-  git("init --bare --initial-branch=main", remoteDir);
+  git(["init", "--bare", "--initial-branch=main"], remoteDir);
 
   // 2. Source clone with a commit on main + a feature branch.
   fs.mkdirSync(sourceRepo);
-  git("init --initial-branch=main", sourceRepo);
-  git("config user.email test@example.com", sourceRepo);
-  git("config user.name Test", sourceRepo);
-  git(`remote add origin ${remoteDir}`, sourceRepo);
+  git(["init", "--initial-branch=main"], sourceRepo);
+  git(["config", "user.email", "test@example.com"], sourceRepo);
+  git(["config", "user.name", "Test"], sourceRepo);
+  git(["remote", "add", "origin", remoteDir], sourceRepo);
   fs.writeFileSync(path.join(sourceRepo, "README.md"), "hello\n");
-  git("add .", sourceRepo);
-  git("commit -m initial", sourceRepo);
-  git("push -u origin main", sourceRepo);
+  git(["add", "."], sourceRepo);
+  git(["commit", "-m", "initial"], sourceRepo);
+  git(["push", "-u", "origin", "main"], sourceRepo);
 
   // 3. Create + push a PR branch.
-  git("checkout -b feature/pr-42", sourceRepo);
+  git(["checkout", "-b", "feature/pr-42"], sourceRepo);
   fs.writeFileSync(path.join(sourceRepo, "feature.txt"), "v1\n");
-  git("add .", sourceRepo);
-  git("commit -m feature-v1", sourceRepo);
-  git("push -u origin feature/pr-42", sourceRepo);
-  git("checkout main", sourceRepo);
+  git(["add", "."], sourceRepo);
+  git(["commit", "-m", "feature-v1"], sourceRepo);
+  git(["push", "-u", "origin", "feature/pr-42"], sourceRepo);
+  git(["checkout", "main"], sourceRepo);
 
   _setWorktreeRootForTests(worktreeRoot);
 });
@@ -136,7 +139,10 @@ describe("ensureWorktree", () => {
     expect(fs.existsSync(path.join(res.worktreePath, "feature.txt"))).toBe(
       true,
     );
-    const branch = git("rev-parse --abbrev-ref HEAD", res.worktreePath).trim();
+    const branch = git(
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      res.worktreePath,
+    ).trim();
     expect(branch).toBe("feature/pr-42");
   });
 
@@ -236,15 +242,15 @@ describe("pullLatest", () => {
     // source repo because the worktree now owns the branch there;
     // clone the bare remote fresh, commit, push.
     const otherClone = path.join(tmpRoot, "other-clone");
-    execSync(`git clone ${remoteDir} ${otherClone}`, {
+    execFileSync("git", ["clone", remoteDir, otherClone], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    git("config user.email test@example.com", otherClone);
-    git("config user.name Test", otherClone);
-    git("checkout feature/pr-42", otherClone);
+    git(["config", "user.email", "test@example.com"], otherClone);
+    git(["config", "user.name", "Test"], otherClone);
+    git(["checkout", "feature/pr-42"], otherClone);
     fs.writeFileSync(path.join(otherClone, "feature.txt"), "v2\n");
-    git("commit -am feature-v2", otherClone);
-    git("push origin feature/pr-42", otherClone);
+    git(["commit", "-am", "feature-v2"], otherClone);
+    git(["push", "origin", "feature/pr-42"], otherClone);
 
     const pull = await pullLatest({
       worktreePath: ensure.worktreePath,
@@ -267,7 +273,7 @@ describe("pullLatest", () => {
     });
     if (!ensure.ok) throw new Error("setup failed");
     // Delete the branch on the bare remote.
-    git("push origin --delete feature/pr-42", sourceRepo);
+    git(["push", "origin", "--delete", "feature/pr-42"], sourceRepo);
 
     const pull = await pullLatest({
       worktreePath: ensure.worktreePath,
@@ -297,7 +303,7 @@ describe("removeWorktree", () => {
     expect(fs.existsSync(ensure.worktreePath)).toBe(false);
 
     // git worktree list shouldn't reference the removed path.
-    const list = git("worktree list", sourceRepo);
+    const list = git(["worktree", "list"], sourceRepo);
     expect(list).not.toContain(ensure.worktreePath);
   });
 

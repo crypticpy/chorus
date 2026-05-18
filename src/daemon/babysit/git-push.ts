@@ -122,7 +122,21 @@ export async function commitAndPush(
     cwd: args.worktreePath,
     timeoutMs: 5_000,
   });
-  const commitSha = sha.ok ? sha.stdout.trim() : "";
+  if (!sha.ok) {
+    // Treat rev-parse failure as a push failure rather than recording a
+    // successful push with an empty commitSha — downstream replies link
+    // back to the commit SHA, so an empty value silently breaks the
+    // audit trail.
+    return {
+      ok: false,
+      reason: "commit_failure",
+      detail:
+        sha.stderr.trim() ||
+        sha.stdout.trim() ||
+        "failed to resolve commit sha after commit",
+    };
+  }
+  const commitSha = sha.stdout.trim();
 
   const push = await runAsync(
     "git",

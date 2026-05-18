@@ -313,7 +313,7 @@ export const ReviewPrSchema = z.object({
 export const BabysitPrSchema = z.object({
   url: z
     .string()
-    .min(1, "url is required")
+    .url("url must be a valid GitHub PR URL")
     .describe(
       "Full GitHub PR URL (e.g. https://github.com/owner/repo/pull/123). " +
         "The chorus daemon registers the PR for autonomous bot-comment " +

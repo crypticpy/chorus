@@ -261,7 +261,10 @@ describe("formatVerifyFailureFeedback (TDD loop)", () => {
     expect(out).toContain("`pnpm test`");
     expect(out).toContain("exit 1");
     expect(out).toContain("AssertionError");
-    expect(out).toContain("do");
+    // Stable substring from the actual instructional sentence — guards
+    // against accidental rewordings that drop the "fix this, don't
+    // re-emit unchanged code" directive the doer relies on.
+    expect(out).toContain("diagnose the failure");
   });
 
   it("labels timeouts distinctly so the doer doesn't try to debug an exit code", () => {

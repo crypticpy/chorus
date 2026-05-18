@@ -13,15 +13,18 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { commitAndPush } from "../src/daemon/babysit/git-push";
 
 let tmp: string;
 let remote: string;
 let worktree: string;
 
-function git(args: string, cwd: string): string {
-  return execSync(`git ${args}`, {
+// argv form so paths containing spaces/shell-meta survive correctly
+// and so we don't shell-interpolate untrusted (well — test-controlled,
+// but still) strings into a command line.
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
     cwd,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -34,19 +37,19 @@ beforeEach(() => {
   worktree = path.join(tmp, "wt");
 
   fs.mkdirSync(remote);
-  git("init --bare --initial-branch=main", remote);
+  git(["init", "--bare", "--initial-branch=main"], remote);
 
   fs.mkdirSync(worktree);
-  git("init --initial-branch=main", worktree);
-  git("config user.email seed@example.com", worktree);
-  git("config user.name Seed", worktree);
-  git(`remote add origin ${remote}`, worktree);
+  git(["init", "--initial-branch=main"], worktree);
+  git(["config", "user.email", "seed@example.com"], worktree);
+  git(["config", "user.name", "Seed"], worktree);
+  git(["remote", "add", "origin", remote], worktree);
   fs.writeFileSync(path.join(worktree, "README.md"), "hello\n");
-  git("add .", worktree);
-  git("commit -m initial", worktree);
-  git("push -u origin main", worktree);
+  git(["add", "."], worktree);
+  git(["commit", "-m", "initial"], worktree);
+  git(["push", "-u", "origin", "main"], worktree);
 
-  git("checkout -b feature/x", worktree);
+  git(["checkout", "-b", "feature/x"], worktree);
 });
 
 afterEach(() => {
@@ -73,7 +76,7 @@ describe("commitAndPush", () => {
 
     // Verify the commit landed on the remote ref.
     const log = git(
-      "--git-dir=" + remote + " log --pretty=%s feature/x",
+      [`--git-dir=${remote}`, "log", "--pretty=%s", "feature/x"],
       remote,
     );
     expect(log).toContain("fix: address PR comment");
@@ -88,7 +91,10 @@ describe("commitAndPush", () => {
     });
     expect(res.ok).toBe(true);
 
-    const author = git("log -1 --pretty='%an|%ae' feature/x", worktree).trim();
+    const author = git(
+      ["log", "-1", "--pretty=%an|%ae", "feature/x"],
+      worktree,
+    ).trim();
     expect(author).toContain("chorus-babysit");
     expect(author).toContain("noreply@chorus.dev");
   });
@@ -102,7 +108,10 @@ describe("commitAndPush", () => {
       authorName: "Custom Bot",
       authorEmail: "bot@example.com",
     });
-    const author = git("log -1 --pretty='%an|%ae' feature/x", worktree).trim();
+    const author = git(
+      ["log", "-1", "--pretty=%an|%ae", "feature/x"],
+      worktree,
+    ).trim();
     expect(author).toContain("Custom Bot");
     expect(author).toContain("bot@example.com");
   });

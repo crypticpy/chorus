@@ -11,6 +11,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { spawnSync } from "child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runVerify } from "../src/daemon/babysit/verifier";
 
@@ -133,12 +134,12 @@ describe("runVerify command resolution", () => {
 });
 
 function hasBinary(name: string): boolean {
-  try {
-    require("child_process").execSync(`which ${name}`, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  // spawnSync over execSync(`which …`) so:
+  //   1. we don't shell-interpolate the name (no injection surface even
+  //      if a future test passed user input),
+  //   2. we don't depend on POSIX `which` (Windows CI doesn't ship it).
+  // Probing `--version` is the cheapest universally-supported "are you
+  // installed and runnable" check.
+  const result = spawnSync(name, ["--version"], { stdio: "ignore" });
+  return !result.error && result.status === 0;
 }

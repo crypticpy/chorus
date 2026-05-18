@@ -549,7 +549,33 @@ export const TemplateSchema = z.object({
       {
         message: "phase ids must be unique",
       },
-    ),
+    )
+    .superRefine((phases, ctx) => {
+      // verify.feedbackPhase must resolve to a real standard phase id —
+      // catches typos at parse time so the TDD loop doesn't get a
+      // runtime "feedbackPhase not found" event after burning through
+      // the verify command on every iteration.
+      const byId = new Map(phases.map((p) => [p.id, p]));
+      for (const p of phases) {
+        if (p.kind !== "verify" || !p.feedbackPhase) continue;
+        const target = byId.get(p.feedbackPhase);
+        const validTarget =
+          target &&
+          target.kind !== "review_only" &&
+          target.kind !== "audit" &&
+          target.kind !== "orchestrate" &&
+          target.kind !== "verify";
+        if (!validTarget) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["phases"],
+            message:
+              `verify phase "${p.id}" has invalid feedbackPhase "${p.feedbackPhase}". ` +
+              `It must reference an existing standard (doer) phase id.`,
+          });
+        }
+      }
+    }),
 
   /**
    * Optional Ship phase — runs after all phases pass + reviewers agree.

@@ -24,7 +24,7 @@ import {
 } from "../api-response.js";
 import { parsePrUrl } from "../github-pr.js";
 
-interface BabysitJobView extends BabysitJob {}
+type BabysitJobView = BabysitJob;
 
 interface BabysitJobDetailView {
   job: BabysitJobView;
@@ -81,6 +81,14 @@ export function registerBabysitRoutes(fastify: FastifyInstance): void {
       });
       return successResponse({ job, created: true });
     } catch (err) {
+      // Race: two requests can both miss the getById above, then one
+      // succeeds and the other trips the UNIQUE constraint on
+      // (repo, pr_number). Re-read on conflict so the loser still gets
+      // the idempotent {created: false} answer instead of a db_error.
+      const racedRow = await babysitJobs.getById(id);
+      if (racedRow) {
+        return successResponse({ job: racedRow, created: false });
+      }
       return errorResponse(
         "db_error",
         `failed to create babysit job: ${err instanceof Error ? err.message : String(err)}`,

@@ -146,12 +146,22 @@ async function appRequest(
     const { _clearTokenCacheForTests } = await import("./gh-app.js");
     _clearTokenCacheForTests();
     res = await issueAppCall(args, config, installationId, fetcher);
-  } else if (res.status >= 500 && res.status < 600) {
-    // GitHub occasionally returns 502/504 under load.
+  } else if (
+    res.status >= 500 &&
+    res.status < 600 &&
+    isIdempotent(args.method)
+  ) {
+    // GitHub occasionally returns 502/504 under load. We only retry
+    // idempotent methods — re-issuing a POST/PATCH risks duplicating
+    // a comment that GitHub already applied before the gateway error.
     await sleep(500);
     res = await issueAppCall(args, config, installationId, fetcher);
   }
   return res;
+}
+
+function isIdempotent(method: HttpMethod): boolean {
+  return method === "GET" || method === "DELETE" || method === "PUT";
 }
 
 async function issueAppCall(

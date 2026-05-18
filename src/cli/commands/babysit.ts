@@ -88,7 +88,25 @@ async function callDaemon<T>(
       },
     };
   }
-  return body as ApiResult<T>;
+  // Validate the envelope shape before handing it to callers — a
+  // mis-routed proxy/CDN can return arbitrary JSON without `ok`, and
+  // downstream code (e.g. the `chorus babysit register` formatter)
+  // dereferences `res.error` which would crash on a bare {} body.
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "ok" in body &&
+    typeof (body as { ok?: unknown }).ok === "boolean"
+  ) {
+    return body as ApiResult<T>;
+  }
+  return {
+    ok: false,
+    error: {
+      code: "invalid_envelope",
+      message: `Daemon returned unexpected JSON shape (HTTP ${response.status})`,
+    },
+  };
 }
 
 function relTime(ms: number | null): string {

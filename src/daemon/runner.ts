@@ -427,6 +427,29 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         if (!verifyOutcome.completed) {
           break;
         }
+        // Verify is a hard gate. If the command failed (or the reviewer
+        // verdict was "request_changes") after the TDD loop exhausted
+        // its retries, treat the run as failed — otherwise downstream
+        // phases (e.g. ship) would happily proceed on top of a red
+        // test/typecheck and chat_done would emit `approved`.
+        if (!verifyOutcome.passed) {
+          anyPhaseDoerFailed = true;
+          doerFailureReason = "max_rounds_exhausted";
+          onEvent({
+            chatId,
+            type: "phase_failed",
+            payload: {
+              phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: "verify",
+              reason: "verify_not_passed",
+              message: verifyOutcome.summary,
+            },
+            ts: Date.now(),
+          });
+          break;
+        }
         onEvent({
           chatId,
           type: "phase_done",

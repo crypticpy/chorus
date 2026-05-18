@@ -79,6 +79,11 @@ export class BabysitScheduler {
   private readonly inFlightPromises = new Map<string, Promise<void>>();
   private intervalHandle: NodeJS.Timeout | null = null;
   private stopped = false;
+  /** Promise for the tick currently mid-dispatch (between listActive()
+   *  awaits and the dispatch loop). stop() awaits this in addition to
+   *  inFlightPromises so a tick that started just before stop() cannot
+   *  spawn fresh jobs after stop() resolves. */
+  private currentTickPromise: Promise<unknown> | null = null;
 
   constructor(opts: SchedulerOptions) {
     this.intervalMs = opts.intervalMs ?? 60_000;
@@ -95,7 +100,12 @@ export class BabysitScheduler {
     // the first scheduled tick. This avoids surprise concurrent
     // activity at daemon boot.
     this.intervalHandle = setInterval(() => {
-      void this.tickOnce();
+      // Surface tick-level failures (e.g. transient DB read errors on
+      // listActive()) through the logger instead of dropping them as
+      // unhandled rejections — `void` would silently swallow them.
+      this.tickOnce().catch((err: unknown) => {
+        this.logger.jobError("(tick)", err);
+      });
     }, this.intervalMs);
     // setInterval keeps the event loop alive; unref so the daemon can
     // shut down on SIGTERM without waiting for the next tick.
@@ -112,7 +122,15 @@ export class BabysitScheduler {
       clearInterval(this.intervalHandle);
       this.intervalHandle = null;
     }
-    // Drain in-flight jobs. Promise.allSettled rather than .all
+    // First, wait for any tick mid-await. Without this, a tick that
+    // had already passed the `if (this.stopped)` guard at entry could
+    // still be sitting in `await babysitJobs.listActive()` and would
+    // dispatch fresh jobs after stop() resolved on inFlightPromises
+    // alone.
+    if (this.currentTickPromise) {
+      await this.currentTickPromise.catch(() => {});
+    }
+    // Then drain in-flight jobs. Promise.allSettled rather than .all
     // because we don't want one failing job to make stop() reject.
     await Promise.allSettled(Array.from(this.inFlightPromises.values()));
   }
@@ -129,7 +147,26 @@ export class BabysitScheduler {
    */
   async tickOnce(): Promise<{ dispatched: string[] }> {
     if (this.stopped) return { dispatched: [] };
+    const tickPromise = this.runTickBody();
+    this.currentTickPromise = tickPromise;
+    try {
+      return await tickPromise;
+    } finally {
+      // Only clear if we're still the in-flight tick — under tests
+      // a second tickOnce can be called before the first resolves,
+      // and we don't want to leak a stale clear.
+      if (this.currentTickPromise === tickPromise) {
+        this.currentTickPromise = null;
+      }
+    }
+  }
+
+  private async runTickBody(): Promise<{ dispatched: string[] }> {
     const candidates = await babysitJobs.listActive();
+    // Re-check stopped after the listActive() await — stop() may have
+    // been called between entry and now, and we must not dispatch
+    // fresh jobs after a stop has begun.
+    if (this.stopped) return { dispatched: [] };
     const eligible = candidates.filter(
       (j) => !this.inFlight.has(j.id) && !NON_DISPATCHABLE.includes(j.state),
     );

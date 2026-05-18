@@ -440,8 +440,12 @@ export async function runVerifyPhase(
   // Resolve the feedback phase up-front so a misconfigured template
   // fails immediately, not after iteration 1's verify burns time.
   let feedbackStdPhase: StandardPhase | null = null;
+  let feedbackPhaseIdx: number | null = null;
   if (phase.feedbackPhase) {
-    const fb = template.phases.find((p) => p.id === phase.feedbackPhase);
+    const fbIdx = template.phases.findIndex(
+      (p) => p.id === phase.feedbackPhase,
+    );
+    const fb = fbIdx >= 0 ? template.phases[fbIdx] : undefined;
     if (!fb) {
       onEvent({
         chatId,
@@ -495,6 +499,7 @@ export async function runVerifyPhase(
       };
     }
     feedbackStdPhase = fb;
+    feedbackPhaseIdx = fbIdx;
   }
 
   const maxIterations = phase.maxIterations ?? 5;
@@ -568,7 +573,10 @@ export async function runVerifyPhase(
       chatDir,
       chatId,
       feedbackStdPhase,
-      phaseIdx,
+      // Use the feedback phase's index so emitted events/artifacts are
+      // attributed to the doer phase that's actually re-running, not
+      // the verify phase that triggered the re-fire.
+      feedbackPhaseIdx ?? phaseIdx,
       round,
       work,
       filesBlock,
@@ -621,6 +629,12 @@ export async function runVerifyPhase(
 
   const commandPassed = !lastResult.timedOut && lastResult.exitCode === 0;
   const passed = commandPassed && reviewOutcome.agreed;
+  // Two distinct failure modes — separate them in the summary so
+  // operators reading the chat log don't have to spelunk the artifact
+  // to figure out which one bit them.
+  const failureSuffix = commandPassed
+    ? `(verify command passed; reviewers requested changes after ${iter} iteration${iter === 1 ? "" : "s"})`
+    : `(verify command failed after ${iter} iteration${iter === 1 ? "" : "s"})`;
 
   return {
     completed: true,
@@ -628,7 +642,7 @@ export async function runVerifyPhase(
     allReviewersFailed: reviewOutcome.allFailed,
     summary: passed
       ? reviewOutcome.summary
-      : `${reviewOutcome.summary} (verify failed after ${iter} iteration${iter === 1 ? "" : "s"})`,
+      : `${reviewOutcome.summary} ${failureSuffix}`,
     command: lastResult,
     iterations: iter,
   };

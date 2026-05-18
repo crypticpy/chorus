@@ -307,8 +307,17 @@ async function handleJudging(
     });
 
     const followup = await dispatchAction(action, comment, job, deps);
-    if (followup === "fix") sawFix = true;
     if (followup === "reply") sawReply = true;
+    if (followup === "fix") {
+      // Only the handleFixing/handlePushing chain consumes one
+      // outcome=null apply-* decision per pass. If we kept looping
+      // and inserted decisions for every unjudged comment, every fix
+      // past the first would be stranded — quiet_check() filters by
+      // hash, not by pending-decision rows. Break after the first
+      // fix and let the next tick pick up the next one.
+      sawFix = true;
+      break;
+    }
     if (followup === "escalate") {
       escalationReason = `decision escalated: ${(action as { reason?: string }).reason ?? "unknown"}`;
       break;
@@ -537,8 +546,15 @@ async function handlePushing(
     } else {
       // no_changes — the doer's rewrite produced identical content.
       // Treat as escalated so a human can confirm the comment doesn't
-      // actually need a follow-up.
+      // actually need a follow-up. Surface the escalation at the JOB
+      // level too — quiet_check filters by hash so a decision-only
+      // escalation would otherwise sit invisible until the bot
+      // re-comments with a different body.
       await babysitDecisions.setOutcome(target.id, "escalated", null);
+      return {
+        nextState: "escalated",
+        escalationReason: `fix for comment ${target.comment_id} produced no file changes`,
+      };
     }
   }
 

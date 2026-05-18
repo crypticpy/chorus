@@ -279,7 +279,12 @@ describe("fetchPrComments", () => {
       since: "2026-05-10T00:00:00Z",
     });
     observedArgs = fs.readFileSync(path.join(tmpBin, "args"), "utf-8");
-    expect(observedArgs).toContain("since=2026-05-10T00%3A00%3A00Z");
+    // `since=…` must be forwarded on BOTH the review-comment and
+    // issue-comment fetches — asserting a single occurrence let a
+    // one-sided regression slip through silently.
+    const needle = "since=2026-05-10T00%3A00%3A00Z";
+    const hits = observedArgs.split(needle).length - 1;
+    expect(hits).toBe(2);
   });
 
   it("returns ok with empty list when gh returns empty arrays", async () => {

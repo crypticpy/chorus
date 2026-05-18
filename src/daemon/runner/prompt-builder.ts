@@ -225,8 +225,18 @@ export function readProjectGuides(repoPath: string | undefined): string {
 
     if (body.trim().length === 0) continue;
 
-    const truncated = body.length > PROJECT_GUIDE_MAX_BYTES;
-    const slice = truncated ? body.slice(0, PROJECT_GUIDE_MAX_BYTES) : body;
+    // Measure + truncate in UTF-8 bytes, not UTF-16 code units —
+    // `PROJECT_GUIDE_MAX_BYTES` is documented as a byte cap, and a
+    // string of multibyte chars (e.g. CJK in comments, emoji in
+    // CLAUDE.md) would otherwise sail past the intended limit.
+    // subarray() may slice a continuation byte; toString("utf-8")
+    // replaces the dangling sequence with U+FFFD, which is the
+    // standard recovery behavior and harmless for context blocks.
+    const bodyBytes = Buffer.from(body, "utf-8");
+    const truncated = bodyBytes.length > PROJECT_GUIDE_MAX_BYTES;
+    const slice = truncated
+      ? bodyBytes.subarray(0, PROJECT_GUIDE_MAX_BYTES).toString("utf-8")
+      : body;
     const sanitized = slice.replace(/<\/project_guidelines>/gi, "");
 
     sections.push(

@@ -121,6 +121,15 @@ export function hashCommentBody(body: string): string {
  * configured for the daemon — required on headless hosts where no human
  * has `gh auth login`'d.
  */
+/**
+ * Cap pages-per-endpoint when paginating. Busy PRs can have hundreds of
+ * comments; this still bounds wall-clock + memory while in practice
+ * covering every PR we'd realistically babysit. (At 100/page that's
+ * 1000 comments across two endpoints — well past the comment-volume
+ * any active PR would generate.)
+ */
+const MAX_PAGES_PER_ENDPOINT = 10;
+
 export async function fetchPrComments(
   args: {
     owner: string;
@@ -140,28 +149,25 @@ export async function fetchPrComments(
   const { owner, repo, prNumber, cwd, since, installationId } = args;
   const sinceQuery = since ? `&since=${encodeURIComponent(since)}` : "";
 
-  const reviewPath = `repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100${sinceQuery}`;
-  const issuePath = `repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100${sinceQuery}`;
+  const reviewBasePath = `repos/${owner}/${repo}/pulls/${prNumber}/comments`;
+  const issueBasePath = `repos/${owner}/${repo}/issues/${prNumber}/comments`;
 
-  const [reviewRes, issueRes] = await Promise.all([
-    ghRequest(
-      {
-        method: "GET",
-        path: reviewPath,
-        cwd,
-        timeoutMs: 20_000,
-        installationId: installationId ?? undefined,
-      },
+  // Walk pages until a short page tells us we're done OR we hit the
+  // safety cap. Per-endpoint independently so a slow page on one
+  // endpoint doesn't starve the other.
+  const [reviewPaged, issuePaged] = await Promise.all([
+    fetchAllPages<GhReviewCommentJson>(
+      reviewBasePath,
+      sinceQuery,
+      cwd,
+      installationId,
       deps,
     ),
-    ghRequest(
-      {
-        method: "GET",
-        path: issuePath,
-        cwd,
-        timeoutMs: 20_000,
-        installationId: installationId ?? undefined,
-      },
+    fetchAllPages<GhIssueCommentJson>(
+      issueBasePath,
+      sinceQuery,
+      cwd,
+      installationId,
       deps,
     ),
   ]);
@@ -169,22 +175,25 @@ export async function fetchPrComments(
   // If both calls failed with the same reason, surface it. If one fails
   // and the other succeeds, prefer the success — partial comment data
   // is more useful than nothing.
-  if (!reviewRes.ok && !issueRes.ok) {
+  if (!reviewPaged.ok && !issuePaged.ok) {
     const reason =
-      classifyGhFailureResult(reviewRes) ?? classifyGhFailureResult(issueRes);
+      classifyGhFailureResult({
+        status: reviewPaged.status,
+        errorText: reviewPaged.errorText,
+      }) ??
+      classifyGhFailureResult({
+        status: issuePaged.status,
+        errorText: issuePaged.errorText,
+      });
     return {
       ok: false,
       reason: reason ?? "unknown",
-      detail: (reviewRes.errorText || issueRes.errorText || "").trim(),
+      detail: (reviewPaged.errorText || issuePaged.errorText || "").trim(),
     };
   }
 
-  const reviewComments = reviewRes.ok
-    ? coerceArray<GhReviewCommentJson>(reviewRes.body)
-    : [];
-  const issueComments = issueRes.ok
-    ? coerceArray<GhIssueCommentJson>(issueRes.body)
-    : [];
+  const reviewComments = reviewPaged.ok ? reviewPaged.items : [];
+  const issueComments = issuePaged.ok ? issuePaged.items : [];
 
   const out: RawPrComment[] = [];
   for (const c of reviewComments) {
@@ -195,6 +204,47 @@ export async function fetchPrComments(
   }
   out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return { ok: true, comments: out };
+}
+
+type PageResult<T> =
+  | { ok: true; items: T[] }
+  | { ok: false; status: number; errorText: string };
+
+async function fetchAllPages<T>(
+  basePath: string,
+  sinceQuery: string,
+  cwd: string,
+  installationId: number | null | undefined,
+  deps: GhClientDeps,
+): Promise<PageResult<T>> {
+  const collected: T[] = [];
+  for (let page = 1; page <= MAX_PAGES_PER_ENDPOINT; page++) {
+    const path = `${basePath}?per_page=100&page=${page}${sinceQuery}`;
+    const res = await ghRequest(
+      {
+        method: "GET",
+        path,
+        cwd,
+        timeoutMs: 20_000,
+        installationId: installationId ?? undefined,
+      },
+      deps,
+    );
+    if (!res.ok) {
+      // Whole-endpoint failure on the FIRST page → fail the endpoint
+      // so the caller's partial-data logic can still prefer the other
+      // endpoint. Failure on page 2+ is treated as "return what we
+      // have so far" — losing the tail is better than losing the head.
+      if (page === 1) {
+        return { ok: false, status: res.status, errorText: res.errorText };
+      }
+      break;
+    }
+    const items = coerceArray<T>(res.body);
+    collected.push(...items);
+    if (items.length < 100) break;
+  }
+  return { ok: true, items: collected };
 }
 
 function normalize(
