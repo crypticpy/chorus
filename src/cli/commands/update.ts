@@ -1,9 +1,9 @@
-import { spawn } from 'child_process';
-import type { Command } from 'commander';
-import fs from 'fs';
-import path from 'path';
-import { pkg } from '../shared.js';
-import { c, header, sym } from '../ui.js';
+import { spawn } from "child_process";
+import type { Command } from "commander";
+import fs from "fs";
+import path from "path";
+import { pkg } from "../shared.js";
+import { c, header, sym } from "../ui.js";
 
 /**
  * `chorus update` — self-locating npm install.
@@ -24,55 +24,55 @@ import { c, header, sym } from '../ui.js';
  */
 export function registerUpdateCommand(program: Command): void {
   program
-    .command('update')
-    .description('Update chorus to the latest version on npm')
-    .option('--check', 'Only check for updates; do not install')
+    .command("update")
+    .description("Update Polyphony to the latest version on npm")
+    .option("--check", "Only check for updates; do not install")
     .action(async (options: { check?: boolean }) => {
       try {
         const current = pkg.version;
         const latest = await fetchLatestVersion();
 
         if (latest === null) {
-          console.log('');
+          console.log("");
           console.log(
             header(
               sym.err,
               "Couldn't reach npm registry",
-              'check your network connection and retry',
+              "check your network connection and retry",
             ),
           );
-          console.log('');
+          console.log("");
           process.exit(1);
         }
 
         if (options.check) {
           if (versionGreater(latest, current)) {
-            console.log('');
+            console.log("");
             console.log(
               header(
                 sym.info,
-                `chorus ${latest} is available`,
+                `Polyphony ${latest} is available`,
                 `you have ${current}`,
               ),
             );
-            console.log(`   Run ${c.cyan('chorus update')} to upgrade`);
-            console.log('');
-          } else {
-            console.log('');
             console.log(
-              header(sym.ok, `chorus ${current} is up to date`),
+              `   Run ${c.cyan("polyphony update")} ${c.dim("(or `chorus update`)")} to upgrade`,
             );
-            console.log('');
+            console.log("");
+          } else {
+            console.log("");
+            console.log(header(sym.ok, `Polyphony ${current} is up to date`));
+            console.log("");
           }
           return;
         }
 
         if (!versionGreater(latest, current)) {
-          console.log('');
+          console.log("");
           console.log(
-            header(sym.ok, `chorus ${current} is already up to date`),
+            header(sym.ok, `Polyphony ${current} is already up to date`),
           );
-          console.log('');
+          console.log("");
           return;
         }
 
@@ -89,80 +89,86 @@ export function registerUpdateCommand(program: Command): void {
         if (prefix) {
           const probe = checkPrefixUsable(prefix);
           if (!probe.ok) {
-            console.log('');
+            console.log("");
             console.log(
               header(
                 sym.err,
-                "Can't update chorus at this prefix",
+                "Can't update Polyphony at this prefix",
                 probe.reason,
               ),
             );
-            console.log('');
-            console.log(c.dim('   Migrate to a Linux-side npm prefix:'));
+            console.log("");
+            console.log(c.dim("   Migrate to a Linux-side npm prefix:"));
             console.log(`     mkdir -p ~/.npm-global`);
             console.log(`     npm config set prefix ~/.npm-global`);
             console.log(
               `     echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc`,
             );
             console.log(`     source ~/.bashrc`);
-            console.log(`     npm install -g chorus-codes`);
-            console.log('');
-            console.log(c.dim('   After that, future `chorus update` calls work normally.'));
-            console.log('');
+            console.log(`     npm install -g @crypticpy/polyphony`);
+            console.log("");
+            console.log(
+              c.dim(
+                "   After that, future `polyphony update` calls work normally.",
+              ),
+            );
+            console.log("");
             process.exit(1);
           }
         }
 
-        console.log('');
+        console.log("");
         console.log(
           header(
             sym.pointer,
-            `Updating chorus ${current} → ${latest}`,
-            prefix ? `prefix ${prefix}` : 'using npm default prefix',
+            `Updating Polyphony ${current} → ${latest}`,
+            prefix ? `prefix ${prefix}` : "using npm default prefix",
           ),
         );
-        console.log('');
+        console.log("");
 
-        const args = ['install', '-g', `chorus-codes@${latest}`];
+        const args = ["install", "-g", `@crypticpy/polyphony@${latest}`];
         if (prefix) {
-          args.push('--prefix', prefix);
+          args.push("--prefix", prefix);
         }
 
         // Hand stdio to npm so the user sees its progress + any errors
         // (EACCES, network, etc.). spawn rather than execFile so we can
         // stream output as it happens.
-        const child = spawn('npm', args, { stdio: 'inherit' });
+        const child = spawn("npm", args, { stdio: "inherit" });
         await new Promise<void>((resolve, reject) => {
-          child.on('exit', (code) => {
+          child.on("exit", (code) => {
             if (code === 0) resolve();
             else reject(new Error(`npm install exited with code ${code}`));
           });
-          child.on('error', reject);
+          child.on("error", reject);
         });
 
-        console.log('');
+        console.log("");
         console.log(
           header(
             sym.ok,
-            `Updated to chorus ${latest}`,
-            'restart any running daemon: chorus stop && chorus start',
+            `Updated to Polyphony ${latest}`,
+            "restart any running daemon: polyphony stop && polyphony start",
           ),
         );
-        console.log('');
+        console.log("");
       } catch (error) {
-        console.log('');
+        console.log("");
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`${sym.err} ${c.red('Update failed:')} ${message}`);
-        console.log('');
+        console.error(`${sym.err} ${c.red("Update failed:")} ${message}`);
+        console.log("");
         console.log(
-          c.dim('   If this is a permissions error, your npm prefix may not be writable.'),
+          c.dim(
+            "   If this is a permissions error, your npm prefix may not be writable.",
+          ),
         );
         console.log(
           c.dim(
-            '   Try: npm config set prefix ~/.npm-global, then add ~/.npm-global/bin to PATH.',
+            "   Try: npm config set prefix ~/.npm-global, then add ~/.npm-global/bin to PATH.",
           ),
         );
-        console.log('');
+        console.log("");
         process.exit(1);
       }
     });
@@ -182,14 +188,14 @@ export function registerUpdateCommand(program: Command): void {
 export function detectNpmPrefix(): string | null {
   const start = __dirname;
   const segments = start.split(path.sep);
-  const nmIdx = segments.lastIndexOf('node_modules');
+  const nmIdx = segments.lastIndexOf("node_modules");
   if (nmIdx === -1) return null;
 
   const parent = segments.slice(0, nmIdx).join(path.sep);
   // Normalise: on POSIX `lib/node_modules/...`, the prefix is up one
   // more from `lib`. On Windows there's no `lib` segment.
-  if (parent.endsWith(path.sep + 'lib') || parent === 'lib') {
-    const prefix = parent.slice(0, -('lib'.length + path.sep.length));
+  if (parent.endsWith(path.sep + "lib") || parent === "lib") {
+    const prefix = parent.slice(0, -("lib".length + path.sep.length));
     return prefix.length > 0 ? prefix : null;
   }
   return parent;
@@ -204,19 +210,24 @@ export function detectNpmPrefix(): string | null {
  * "couldn't check" message instead of crashing.
  */
 export async function fetchLatestVersion(
-  packageName = 'chorus-codes',
+  packageName = "@crypticpy/polyphony",
 ): Promise<string | null> {
   try {
+    // Scoped names (`@scope/pkg`) need the `/` percent-encoded as `%2F`
+    // for npm's dist-tags endpoint to resolve them — otherwise the
+    // registry interprets the slash as a path separator and 404s.
+    // encodeURIComponent is a no-op for unscoped names like `chorus-codes`.
+    const encodedName = encodeURIComponent(packageName);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 5000);
     const res = await fetch(
-      `https://registry.npmjs.org/-/package/${packageName}/dist-tags`,
+      `https://registry.npmjs.org/-/package/${encodedName}/dist-tags`,
       { signal: ac.signal },
     );
     clearTimeout(timer);
     if (!res.ok) return null;
     const data = (await res.json()) as { latest?: string };
-    return typeof data.latest === 'string' ? data.latest : null;
+    return typeof data.latest === "string" ? data.latest : null;
   } catch {
     return null;
   }
@@ -230,7 +241,7 @@ export async function fetchLatestVersion(
  */
 export function versionGreater(a: string, b: string): boolean {
   const parse = (v: string): number[] =>
-    v.split('.').map((n) => Number.parseInt(n, 10) || 0);
+    v.split(".").map((n) => Number.parseInt(n, 10) || 0);
   const aa = parse(a);
   const bb = parse(b);
   const len = Math.max(aa.length, bb.length);
@@ -277,18 +288,18 @@ export function checkPrefixUsable(
   // not exist yet on a fresh prefix; mkdir + write + unlink is the
   // safest test.
   try {
-    const targetDir = path.join(prefix, 'lib', 'node_modules');
+    const targetDir = path.join(prefix, "lib", "node_modules");
     fs.mkdirSync(targetDir, { recursive: true });
     const probePath = path.join(
       targetDir,
       `.chorus-update-probe-${process.pid}-${Date.now()}`,
     );
-    fs.writeFileSync(probePath, 'probe');
+    fs.writeFileSync(probePath, "probe");
     fs.unlinkSync(probePath);
     return { ok: true };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
       return {
         ok: false,
         reason: `prefix isn't writable by the current user (${code} on ${prefix}/lib/node_modules).`,
@@ -321,4 +332,3 @@ export function resolveChorusBinaryPath(): string | null {
     return entry;
   }
 }
-

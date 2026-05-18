@@ -1,5 +1,5 @@
 /**
- * Chorus daemon — Fastify HTTP server.
+ * Polyphony daemon — Fastify HTTP server.
  *
  * Boots the DB, seeds builtin personas/voices/templates, registers route
  * groups, and starts the reaper. Routes live in `routes/*.ts`; the
@@ -312,7 +312,7 @@ async function main(): Promise<void> {
   // Keep the human-readable startup line — the install script +
   // onboarding grep for it. Structured line above is what `chorus logs`
   // consumes.
-  console.log(`Chorus daemon listening on http://${HOST}:${PORT}`);
+  console.log(`Polyphony daemon listening on http://${HOST}:${PORT}`);
 
   // Anonymous opt-out telemetry. First send is delayed 5s so the
   // listener is definitely up; subsequent sends every 24h. All three

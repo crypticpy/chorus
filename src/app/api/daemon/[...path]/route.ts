@@ -60,10 +60,9 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
   // while the daemon itself only exposes the versioned shape. Exact
   // segment check — `startsWith("api/v1")` would naively match
   // `api/v10/...` or `api/v1foo/...` and skip prepending.
-  const isPrefixed = segments === API_PREFIX || segments.startsWith(`${API_PREFIX}/`);
-  const versionedSegments = isPrefixed
-    ? segments
-    : `${API_PREFIX}/${segments}`;
+  const isPrefixed =
+    segments === API_PREFIX || segments.startsWith(`${API_PREFIX}/`);
+  const versionedSegments = isPrefixed ? segments : `${API_PREFIX}/${segments}`;
   const search = req.nextUrl.search;
   const daemonUrl = await getDaemonUrl();
   const target = `${daemonUrl}/${versionedSegments}${search}`;
@@ -87,8 +86,7 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
   // see DELETE through fetchFromDaemon. We also drop the upstream
   // Content-Type for empty requests because Fastify rejects
   // application/json + empty body with FST_ERR_CTP_EMPTY_JSON_BODY.
-  const hasContentLength =
-    Number(req.headers.get("content-length") ?? "0") > 0;
+  const hasContentLength = Number(req.headers.get("content-length") ?? "0") > 0;
   const isChunked = (req.headers.get("transfer-encoding") ?? "")
     .toLowerCase()
     .includes("chunked");
@@ -142,7 +140,7 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
         error: {
           code: "daemon_unreachable",
           message:
-            "Chorus daemon is not running on this host. Start it with `chorus start`.",
+            "Polyphony daemon is not running on this host. Start it with `chorus start`.",
         },
       },
       { status: 502 },

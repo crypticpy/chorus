@@ -1,19 +1,15 @@
-import type { Command } from 'commander';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import type { Command } from "commander";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import {
   clearDaemonInfo,
   DEFAULT_COCKPIT_PORT,
   DEFAULT_DAEMON_PORT,
   readDaemonInfo,
-} from '../../lib/daemon-discovery.js';
-import {
-  findPidsOnPort,
-  isPortInUse,
-  killAndVerify,
-} from '../port-utils.js';
-import { c, header, sym } from '../ui.js';
+} from "../../lib/daemon-discovery.js";
+import { findPidsOnPort, isPortInUse, killAndVerify } from "../port-utils.js";
+import { c, header, sym } from "../ui.js";
 
 /**
  * Two-stage shutdown per managed process: SIGTERM, wait up to 1.5s,
@@ -29,13 +25,13 @@ import { c, header, sym } from '../ui.js';
  */
 export function registerStopCommand(program: Command): void {
   program
-    .command('stop')
-    .description('Stop the Chorus daemon and cockpit')
+    .command("stop")
+    .description("Stop the Polyphony daemon and cockpit")
     .action(async () => {
       try {
-        const chorusDir = path.join(os.homedir(), '.chorus');
-        const daemonPidFile = path.join(chorusDir, 'daemon.pid');
-        const webPidFile = path.join(chorusDir, 'web.pid');
+        const chorusDir = path.join(os.homedir(), ".chorus");
+        const daemonPidFile = path.join(chorusDir, "daemon.pid");
+        const webPidFile = path.join(chorusDir, "web.pid");
 
         const info = readDaemonInfo();
         const daemonPort = info?.daemonPort ?? DEFAULT_DAEMON_PORT;
@@ -53,36 +49,41 @@ export function registerStopCommand(program: Command): void {
           !daemonPortInUse &&
           !cockpitPortInUse
         ) {
-          console.log('');
-          console.log(header(sym.info, 'Chorus is not running', 'nothing to stop'));
-          console.log('');
+          console.log("");
+          console.log(
+            header(sym.info, "Polyphony is not running", "nothing to stop"),
+          );
+          console.log("");
           return;
         }
 
-        console.log('');
-        console.log(header(sym.pointer, 'Stopping Chorus...'));
-        console.log('');
+        console.log("");
+        console.log(header(sym.pointer, "Stopping Polyphony..."));
+        console.log("");
 
         // Prefer daemon.json (v0.8), fall back to pidfiles (v0.7).
         if (info) {
-          await stopByPid('Daemon', info.daemonPid);
+          await stopByPid("Daemon", info.daemonPid);
           if (info.cockpitPid) {
-            await stopByPid('Cockpit', info.cockpitPid);
+            await stopByPid("Cockpit", info.cockpitPid);
           }
         }
-        await stopByPidFile('Daemon', daemonPidFile);
-        await stopByPidFile('Cockpit', webPidFile);
+        await stopByPidFile("Daemon", daemonPidFile);
+        await stopByPidFile("Cockpit", webPidFile);
 
         // Port-based sweep — kills any chorus-owned listener that
         // escaped the pidfile path.
-        await sweepPort(daemonPort, 'Daemon');
-        await sweepPort(cockpitPort, 'Cockpit');
+        await sweepPort(daemonPort, "Daemon");
+        await sweepPort(cockpitPort, "Cockpit");
 
         clearDaemonInfo();
 
-        console.log('');
+        console.log("");
       } catch (error) {
-        console.error(`${sym.err} ${c.red('Error stopping chorus:')}`, error);
+        console.error(
+          `${sym.err} ${c.red("Error stopping Polyphony:")}`,
+          error,
+        );
         process.exit(1);
       }
     });
@@ -98,7 +99,7 @@ async function stopByPid(label: string, pid: number): Promise<void> {
 
 async function stopByPidFile(label: string, pidFile: string): Promise<void> {
   if (!fs.existsSync(pidFile)) return;
-  const pid = parseInt(fs.readFileSync(pidFile, 'utf-8'), 10);
+  const pid = parseInt(fs.readFileSync(pidFile, "utf-8"), 10);
   if (!Number.isFinite(pid) || pid <= 0) {
     fs.unlinkSync(pidFile);
     return;

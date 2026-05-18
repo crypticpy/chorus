@@ -44,7 +44,7 @@ export function registerStartCommand(program: Command): void {
       "--daemon-only",
       "Skip cockpit (Next.js UI). Used by MCP auto-start.",
     )
-    .description("Start the Chorus daemon (PM2-style fork)")
+    .description("Start the Polyphony daemon (PM2-style fork)")
     .action(async (options: { ui?: boolean; daemonOnly?: boolean }) => {
       try {
         const chorusDir = path.join(os.homedir(), ".chorus");
@@ -249,7 +249,7 @@ async function alreadyRunningHealthy(
   console.log(
     header(
       sym.ok,
-      "Chorus is already running",
+      "Polyphony is already running",
       `version ${live.version || pkg.version}`,
     ),
   );
@@ -274,7 +274,7 @@ async function alreadyRunningHealthy(
     console.log("");
     console.log(
       c.dim(
-        "   Daemon-only mode. Run `chorus start --ui` to bring up the cockpit.",
+        "   Daemon-only mode. Run `polyphony start --ui` (or `chorus start --ui`) to bring up the cockpit.",
       ),
     );
     console.log("");
@@ -312,7 +312,7 @@ async function spawnCockpitForExistingDaemon(chorusDir: string): Promise<void> {
     console.log("");
     console.log(
       c.red(
-        "  ✗ Cockpit UI not found. Try `npm install -g chorus-codes` to repair.",
+        "  ✗ Cockpit UI not found. Try `npm install -g @crypticpy/polyphony` to repair.",
       ),
     );
     console.log("");
@@ -515,7 +515,7 @@ function warnIfTmuxMissing(): void {
     console.log("");
     console.log(
       c.dim(
-        `  ${sym.info} tmux not detected. Chorus runs headless by default — this is fine.`,
+        `  ${sym.info} tmux not detected. Polyphony runs headless by default — this is fine.`,
       ),
     );
     console.log(c.dim("    Optional backup mode: install tmux, then open"));
@@ -635,7 +635,7 @@ async function spawnDaemonAndCockpit(
           "    The published install should ship a built UI. Try reinstalling:",
         ),
       );
-      console.log(`    ${c.bold("npm install -g chorus-codes")}`);
+      console.log(`    ${c.bold("npm install -g @crypticpy/polyphony")}`);
     }
     console.log(
       c.dim(
@@ -655,7 +655,11 @@ async function spawnDaemonAndCockpit(
 
   console.log("");
   console.log(
-    header(sym.ok, `Chorus started v${pkg.version}`, `daemon PID ${child.pid}`),
+    header(
+      sym.ok,
+      `Polyphony started v${pkg.version}`,
+      `daemon PID ${child.pid}`,
+    ),
   );
   // Path of the resolved binary helps users diagnose multi-install
   // confusion (sudo npm install vs nvm-managed npm). Quiet by default
@@ -692,7 +696,7 @@ async function checkForUpdate(): Promise<void> {
     if (!latest) return;
     if (!versionGreater(latest, pkg.version)) return;
     console.log(
-      `   ${c.dim("•")} ${c.cyan(`chorus ${latest}`)} ${c.dim("is available — run")} ${c.cyan("chorus update")}`,
+      `   ${c.dim("•")} ${c.cyan(`Polyphony ${latest}`)} ${c.dim("is available — run")} ${c.cyan("polyphony update")}`,
     );
     console.log("");
   } catch {

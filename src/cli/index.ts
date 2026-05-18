@@ -39,7 +39,7 @@ program.addHelpText("beforeAll", () => {
   if (!initialised) {
     return [
       "",
-      `  ${sym.rocket} ${c.bold("Welcome to Chorus")} ${c.dim("— two commands to get going:")}`,
+      `  ${sym.rocket} ${c.bold("Welcome to Polyphony")} ${c.dim("— two commands to get going:")}`,
       "",
       `    ${c.cyan("1.")} ${c.bold("chorus init")}     ${c.dim("register MCP with your editors + seed templates + detect CLIs")}`,
       `    ${c.cyan("2.")} ${c.bold("chorus start")}    ${c.dim("bring up the daemon + cockpit")}`,
@@ -70,7 +70,7 @@ registerBabysitCommand(program);
 
 program
   .command("ui")
-  .description("Open the Chorus web UI in default browser")
+  .description("Open the Polyphony web UI in default browser")
   .action(async () => {
     try {
       const env = detectRuntimeEnv();
@@ -95,7 +95,7 @@ program
 program
   .command("connect [orchestrator]")
   .description(
-    "Pre-approve all Chorus MCP tools in your orchestrator (default: claude)",
+    "Pre-approve all Polyphony MCP tools in your orchestrator (default: claude)",
   )
   .action(async (orchestrator?: string) => {
     const { runConnect } = await import("./connect.js");

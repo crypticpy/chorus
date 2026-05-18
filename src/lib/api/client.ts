@@ -142,7 +142,7 @@ export async function fetchFromDaemon<T>(
       throw new DaemonError(
         "connection_failed",
         0,
-        "Failed to connect to Chorus daemon. Is it running?",
+        "Failed to connect to Polyphony daemon. Is it running?",
       );
     }
 
