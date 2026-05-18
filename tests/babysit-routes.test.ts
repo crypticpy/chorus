@@ -188,6 +188,100 @@ describe("GET /babysit/jobs", () => {
   });
 });
 
+describe("PATCH /babysit/jobs/:id", () => {
+  it("pauses an active job (idle → paused)", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "pause" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data.job.state).toBe("paused");
+  });
+
+  it("is idempotent when pausing an already-paused job", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    await babysitJobs.setState(job.id, "paused");
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "pause" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.job.state).toBe("paused");
+  });
+
+  it("resumes a paused job (paused → idle) and clears ended_at", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    await babysitJobs.setState(job.id, "paused");
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "resume" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.job.state).toBe("idle");
+    expect(res.json().data.job.ended_at).toBeNull();
+  });
+
+  it("rejects pause on a terminal (merged) job with conflict", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    await babysitJobs.setState(job.id, "merged");
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "pause" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("conflict");
+  });
+
+  it("rejects pause on a terminal (escalated) job with conflict", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    await babysitJobs.setState(job.id, "escalated");
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "pause" },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("rejects resume on a non-paused job with conflict", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "resume" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.message).toContain("paused");
+  });
+
+  it("rejects unknown actions with validation", async () => {
+    const job = await babysitJobs.create({ repo: "o/r", pr_number: 1 });
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: `/babysit/jobs/${encodeURIComponent(job.id)}`,
+      payload: { action: "cancel" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation");
+  });
+
+  it("returns 404 when patching an unknown job", async () => {
+    const res = await fastify.inject({
+      method: "PATCH",
+      url: "/babysit/jobs/missing%23999",
+      payload: { action: "pause" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("GET /babysit/jobs/:id", () => {
   it("returns 404 for an unknown job", async () => {
     const res = await fastify.inject({

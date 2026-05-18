@@ -1,15 +1,14 @@
 /**
- * PR babysit registration + observation routes (Phase A).
+ * PR babysit registration + observation routes.
  *
- * Phase A scope: this is the registrar + read API only. The state-machine
- * runner that walks jobs through judging → fixing → verifying lives in a
- * follow-up — for now `POST /babysit/jobs` upserts a row in `idle` state
- * so the user (via MCP / CLI) can intend a PR for babysitting, and the
- * follow-up runner will pick up `idle` rows on its tick.
+ *   POST  /babysit/jobs       { url, installationId? }     → upsert idle job
+ *   GET   /babysit/jobs                                    → list jobs
+ *   GET   /babysit/jobs/:id                                → fetch one job + recent decisions
+ *   PATCH /babysit/jobs/:id   { action: 'pause'|'resume' } → toggle scheduler eligibility
  *
- *   POST /babysit/jobs   { url, installationId? }   → upsert idle job
- *   GET  /babysit/jobs                              → list active jobs
- *   GET  /babysit/jobs/:id                          → fetch one job + recent decisions
+ * The scheduler treats `paused` as non-dispatchable, so a paused job stays
+ * registered (and visible) but the state machine won't pick it up until
+ * resumed (which puts it back into `idle`).
  */
 import type { FastifyInstance } from "fastify";
 import {
@@ -105,6 +104,53 @@ export function registerBabysitRoutes(fastify: FastifyInstance): void {
       items = await babysitJobs.list();
     }
     return successResponse({ items, total: items.length });
+  });
+
+  fastify.patch<{
+    Params: { id: string };
+    Body: { action?: string };
+    Reply: ApiResponse<{ job: BabysitJobView }>;
+  }>("/babysit/jobs/:id", async (request, reply) => {
+    const { id } = request.params;
+    const action = request.body?.action;
+    if (action !== "pause" && action !== "resume") {
+      return sendError(
+        reply,
+        "validation",
+        "action must be 'pause' or 'resume'",
+      );
+    }
+    const existing = await babysitJobs.getById(id);
+    if (!existing) {
+      return sendError(reply, "not_found", `babysit job not found: ${id}`);
+    }
+    if (action === "pause") {
+      // Terminal jobs can't be paused — there's nothing for the scheduler
+      // to skip once a job is merged or escalated.
+      if (existing.state === "merged" || existing.state === "escalated") {
+        return sendError(
+          reply,
+          "conflict",
+          `cannot pause job in terminal state '${existing.state}'`,
+        );
+      }
+      if (existing.state === "paused") {
+        return successResponse({ job: existing });
+      }
+      // Re-open ended_at so the job re-enters listActive() once resumed.
+      const job = await babysitJobs.setState(id, "paused", { ended_at: null });
+      return successResponse({ job });
+    }
+    // resume
+    if (existing.state !== "paused") {
+      return sendError(
+        reply,
+        "conflict",
+        `can only resume a paused job (current state: '${existing.state}')`,
+      );
+    }
+    const job = await babysitJobs.setState(id, "idle", { ended_at: null });
+    return successResponse({ job });
   });
 
   fastify.get<{
