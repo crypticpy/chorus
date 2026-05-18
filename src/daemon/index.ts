@@ -16,6 +16,8 @@ import { ErrorDetector } from "./error-detector.js";
 import { startReaper } from "./reaper.js";
 import { activeRunsCount, activeRunsSnapshot } from "./runner-multiplex.js";
 import { registerBabysitRoutes } from "./routes/babysit.js";
+import { BabysitScheduler } from "./babysit/scheduler.js";
+import { runJob as runBabysitJob } from "./babysit/state-machine.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerChatEventsRoute } from "./routes/chats-events.js";
 import { registerOpenRouterRoutes } from "./routes/openrouter.js";
@@ -322,6 +324,42 @@ async function main(): Promise<void> {
   });
   process.on("SIGTERM", () => telemetryHandle.stop());
   process.on("SIGINT", () => telemetryHandle.stop());
+
+  // PR-babysit scheduler — picks up active babysit_jobs every 60s and
+  // walks them through the state machine. Source-repo path defaults
+  // to the daemon's CWD; per-repo overrides land when the registrar
+  // gains a `sourceRepoPath` field on the babysit job row.
+  // Skipped under CHORUS_DISABLE_BABYSIT_SCHEDULER=1 (set during
+  // integration tests where the scheduler would race with explicit
+  // tickOnce() calls).
+  let babysitScheduler: BabysitScheduler | null = null;
+  if (process.env.CHORUS_DISABLE_BABYSIT_SCHEDULER !== "1") {
+    babysitScheduler = new BabysitScheduler({
+      runJob: (job) =>
+        runBabysitJob(job, {
+          sourceRepoPath: process.cwd(),
+          doerLineage: "anthropic",
+          doerModel: "claude-haiku-4-5",
+          log: (line) => logger.debug({ scope: "babysit" }, line),
+        }),
+      logger: {
+        tickStart: (info) =>
+          logger.debug({ scope: "babysit-scheduler", ...info }, "tick"),
+        jobStart: (id) =>
+          logger.debug({ scope: "babysit-scheduler", id }, "job start"),
+        jobEnd: (id, ms) =>
+          logger.debug({ scope: "babysit-scheduler", id, ms }, "job end"),
+        jobError: (id, err) =>
+          logger.warn(
+            { scope: "babysit-scheduler", id, err: String(err) },
+            "job error",
+          ),
+      },
+    });
+    babysitScheduler.start();
+    process.on("SIGTERM", () => void babysitScheduler?.stop());
+    process.on("SIGINT", () => void babysitScheduler?.stop());
+  }
 
   // Voices Phase 2 — background warmup. `opencode models` shells out
   // and can take up to 10s; running it post-listen avoids that boot-
